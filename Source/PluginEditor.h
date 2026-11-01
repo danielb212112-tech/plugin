@@ -115,7 +115,6 @@ private:
     using SliderAttachment = juce::AudioProcessorValueTreeState::SliderAttachment;
     WaveForgeLookAndFeel lookAndFeel;
     WaveForgePageContent content;
-    juce::Viewport viewport;
     std::array<std::unique_ptr<WaveForgeLfoDisplay>, 2> lfoDisplays;
     std::array<std::unique_ptr<juce::Label>, 2> lfoLabels;
     std::unique_ptr<juce::Label> matrixTitle;
@@ -162,7 +161,6 @@ private:
     WaveForgeProcessor& audioProcessor;
     WaveForgeLookAndFeel lookAndFeel;
     WaveForgePageContent content;
-    juce::Viewport viewport;
     std::unique_ptr<WaveForgeWaveDisplay> waveform;
     std::unique_ptr<WaveForgeWaveDisplay> waveform2;
     std::unique_ptr<WaveForgeUnisonDisplay> unisonDisplay;
