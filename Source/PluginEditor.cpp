@@ -103,8 +103,9 @@ void WaveForgeLookAndFeel::drawButtonBackground (juce::Graphics& g, juce::Button
     g.drawRoundedRectangle (bounds, 7.0f, 1.0f);
 }
 
-WaveForgeWaveDisplay::WaveForgeWaveDisplay (WaveForgeProcessor& p)
-    : processor (p), position (p.apvts.getRawParameterValue ("wtPos"))
+WaveForgeWaveDisplay::WaveForgeWaveDisplay (WaveForgeProcessor& p, const juce::String& parameterID,
+                                             const juce::String& name)
+    : processor (p), position (p.apvts.getRawParameterValue (parameterID)), displayName (name)
 {
     startTimerHz (24);
 }
@@ -189,7 +190,7 @@ void WaveForgeWaveDisplay::paint (juce::Graphics& g)
     const auto nameB = WavetableBank::frameName (frameB);
     g.setColour (textMain);
     g.setFont (juce::Font (11.0f, juce::Font::bold));
-    g.drawText (blend < 0.03f ? nameA : nameA + "  →  " + nameB,
+    g.drawText (displayName + "  •  " + (blend < 0.03f ? nameA : nameA + "  →  " + nameB),
                 plot.getX(), bounds.getY() + 5.0f, plot.getWidth(), 15.0f,
                 juce::Justification::centredLeft);
 }
@@ -219,8 +220,10 @@ WaveForgeParameterPage::WaveForgeParameterPage (
 
     if (showWaveform)
     {
-        waveform = std::make_unique<WaveForgeWaveDisplay> (processor);
+        waveform = std::make_unique<WaveForgeWaveDisplay> (processor, "wtPos", "OSCILLATOR 1");
+        waveform2 = std::make_unique<WaveForgeWaveDisplay> (processor, "osc2Pos", "OSCILLATOR 2");
         content.addAndMakeVisible (*waveform);
+        content.addAndMakeVisible (*waveform2);
     }
 
     for (const auto& item : parameters)
@@ -287,14 +290,20 @@ void WaveForgeParameterPage::resized()
     constexpr int cellHeight = 126;
     constexpr int gap = 8;
     const int cellWidth = (width - 32 - gap * (columns - 1)) / columns;
-    const int top = waveform != nullptr ? 176 : 14;
+    const int top = waveform != nullptr ? 180 : 14;
     const int rows = (int) (controls.size() + (size_t) columns - 1) / columns;
     const int totalHeight = top + rows * (cellHeight + gap) + 14;
     content.setSize (width, juce::jmax (viewport.getHeight(), totalHeight));
     content.cards.clear();
 
     if (waveform != nullptr)
-        waveform->setBounds (16, 12, width - 32, 150);
+    {
+        const int displayGap = 12;
+        const int displayWidth = (width - 32 - displayGap) / 2;
+        waveform->setBounds (16, 12, displayWidth, 150);
+        if (waveform2 != nullptr)
+            waveform2->setBounds (16 + displayWidth + displayGap, 12, displayWidth, 150);
+    }
 
     for (size_t i = 0; i < controls.size(); ++i)
     {
