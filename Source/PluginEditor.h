@@ -28,6 +28,19 @@ private:
     juce::String displayName;
 };
 
+class WaveForgeUnisonDisplay final : public juce::Component, private juce::Timer
+{
+public:
+    explicit WaveForgeUnisonDisplay (WaveForgeProcessor&);
+    void paint (juce::Graphics&) override;
+
+private:
+    void timerCallback() override;
+    std::atomic<float>* voices = nullptr;
+    std::atomic<float>* detune = nullptr;
+    std::atomic<float>* spread = nullptr;
+};
+
 class WaveForgePageContent final : public juce::Component
 {
 public:
@@ -55,6 +68,7 @@ private:
     juce::Viewport viewport;
     std::unique_ptr<WaveForgeWaveDisplay> waveform;
     std::unique_ptr<WaveForgeWaveDisplay> waveform2;
+    std::unique_ptr<WaveForgeUnisonDisplay> unisonDisplay;
     std::vector<std::unique_ptr<juce::Component>> controls;
     std::vector<std::unique_ptr<juce::Label>> labels;
     std::vector<std::unique_ptr<SliderAttachment>> sliderAttachments;
