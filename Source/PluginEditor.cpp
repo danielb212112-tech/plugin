@@ -251,6 +251,173 @@ void WaveForgeUnisonDisplay::paint (juce::Graphics& g)
     }
 }
 
+WaveForgeEnvelopeEditor::WaveForgeEnvelopeEditor (WaveForgeProcessor& p,
+                                                                         const juce::String& prefix,
+                                                                         const juce::String& name)
+    : processor (p), title (name)
+{
+    attack  = p.apvts.getParameter (prefix == "amp" ? "attack" : "fAttack");
+    decay   = p.apvts.getParameter (prefix == "amp" ? "decay" : "fDecay");
+    sustain = p.apvts.getParameter (prefix == "amp" ? "sustain" : "fSustain");
+    release = p.apvts.getParameter (prefix == "amp" ? "release" : "fRelease");
+}
+
+WaveForgeEnvelopeEditor::~WaveForgeEnvelopeEditor()
+{
+    if (activeParameter != nullptr)
+        activeParameter->endChangeGesture();
+}
+
+juce::Point<float> WaveForgeEnvelopeEditor::getHandlePosition (Handle handle) const
+{
+    auto bounds = getLocalBounds().toFloat().reduced (18.0f, 28.0f);
+    const auto norm = [] (juce::RangedAudioParameter* p)
+    {
+        return p != nullptr ? p->convertTo0to1 (p->getValue()) : 0.0f;
+    };
+    const float a = norm (attack);
+    const float d = norm (decay);
+    const float s = norm (sustain);
+    const float r = norm (release);
+    const float peakX = bounds.getX() + bounds.getWidth() * (0.12f + 0.20f * a);
+    const float sustainX = bounds.getX() + bounds.getWidth() * (0.43f + 0.17f * d);
+    const float sustainY = bounds.getBottom() - bounds.getHeight() * s;
+    const float releaseX = bounds.getX() + bounds.getWidth() * (0.66f + 0.30f * r);
+
+    switch (handle)
+    {
+        case Handle::attack:  return { peakX, bounds.getY() };
+        case Handle::decay:   return { sustainX, bounds.getY() };
+        case Handle::sustain: return { sustainX, sustainY };
+        case Handle::release: return { releaseX, bounds.getBottom() };
+        default:              return {};
+    }
+}
+
+void WaveForgeEnvelopeEditor::updateParameter (juce::RangedAudioParameter* parameter, float normalized)
+{
+    if (parameter == nullptr)
+        return;
+    parameter->setValueNotifyingHost (juce::jlimit (0.0f, 1.0f, normalized));
+}
+
+void WaveForgeEnvelopeEditor::paint (juce::Graphics& g)
+{
+    auto area = getLocalBounds().toFloat();
+    g.setColour (juce::Colour (0xff0c1522));
+    g.fillRoundedRectangle (area, 9.0f);
+    g.setColour (juce::Colour (0xff263950));
+    g.drawRoundedRectangle (area.reduced (0.5f), 9.0f, 1.0f);
+
+    g.setColour (textMain);
+    g.setFont (juce::Font (10.5f, juce::Font::bold));
+    g.drawText (title.toUpperCase() + "  •  DRAG POINTS TO EDIT", 12, 5,
+                getWidth() - 24, 16, juce::Justification::centredLeft);
+
+    auto plot = area.reduced (18.0f, 28.0f);
+    g.setColour (juce::Colour (0xff203249));
+    for (int i = 1; i < 4; ++i)
+        g.drawHorizontalLine ((int) (plot.getY() + plot.getHeight() * (float) i / 4.0f),
+                              plot.getX(), plot.getRight());
+
+    const auto start = juce::Point<float> (plot.getX(), plot.getBottom());
+    const auto a = getHandlePosition (Handle::attack);
+    const auto d = getHandlePosition (Handle::decay);
+    const auto s = getHandlePosition (Handle::sustain);
+    const auto r = getHandlePosition (Handle::release);
+
+    juce::Path envelope;
+    envelope.startNewSubPath (start);
+    envelope.lineTo (a);
+    envelope.lineTo (s);
+    envelope.lineTo (r);
+    g.setColour (accent.withAlpha (0.13f));
+    auto fill = envelope;
+    fill.lineTo (plot.getRight(), plot.getBottom());
+    fill.closeSubPath();
+    g.fillPath (fill);
+    g.setColour (accent);
+    g.strokePath (envelope, juce::PathStrokeType (2.2f, juce::PathStrokeType::curved,
+                                                   juce::PathStrokeType::rounded));
+
+    const juce::Point<float> handles[] { a, d, s, r };
+    for (int i = 0; i < 4; ++i)
+    {
+        g.setColour (i == (int) activeHandle - 1 ? textMain : accent);
+        g.fillEllipse (handles[i].x - 4.5f, handles[i].y - 4.5f, 9.0f, 9.0f);
+        g.setColour (juce::Colour (0xff07111c));
+        g.drawEllipse (handles[i].x - 4.5f, handles[i].y - 4.5f, 9.0f, 9.0f, 1.0f);
+    }
+}
+
+void WaveForgeEnvelopeEditor::mouseDown (const juce::MouseEvent& event)
+{
+    const juce::Point<float> point = event.position;
+    const Handle candidates[] { Handle::attack, Handle::decay, Handle::sustain, Handle::release };
+    juce::RangedAudioParameter* parameters[] { attack, decay, sustain, release };
+    float bestDistance = 18.0f;
+    for (int i = 0; i < 4; ++i)
+    {
+        const float distance = getHandlePosition (candidates[i]).getDistanceFrom (point);
+        if (distance < bestDistance)
+        {
+            bestDistance = distance;
+            activeHandle = candidates[i];
+            activeParameter = parameters[i];
+        }
+    }
+
+    if (activeParameter != nullptr)
+    {
+        activeParameter->beginChangeGesture();
+        mouseDrag (event);
+    }
+}
+
+void WaveForgeEnvelopeEditor::mouseDrag (const juce::MouseEvent& event)
+{
+    if (activeParameter == nullptr)
+        return;
+
+    auto plot = getLocalBounds().toFloat().reduced (18.0f, 28.0f);
+    const float x = juce::jlimit (plot.getX(), plot.getRight(), event.position.x);
+    const float y = juce::jlimit (plot.getY(), plot.getBottom(), event.position.y);
+    float normalized = 0.0f;
+
+    switch (activeHandle)
+    {
+        case Handle::attack:
+            normalized = (x - plot.getX()) / plot.getWidth();
+            normalized = (normalized - 0.12f) / 0.20f;
+            break;
+        case Handle::decay:
+            normalized = (x - plot.getX()) / plot.getWidth();
+            normalized = (normalized - 0.43f) / 0.17f;
+            break;
+        case Handle::sustain:
+            normalized = 1.0f - (y - plot.getY()) / plot.getHeight();
+            break;
+        case Handle::release:
+            normalized = (x - plot.getX()) / plot.getWidth();
+            normalized = (normalized - 0.66f) / 0.30f;
+            break;
+        default:
+            return;
+    }
+
+    updateParameter (activeParameter, normalized);
+    repaint();
+}
+
+void WaveForgeEnvelopeEditor::mouseUp (const juce::MouseEvent&)
+{
+    if (activeParameter != nullptr)
+        activeParameter->endChangeGesture();
+    activeParameter = nullptr;
+    activeHandle = Handle::none;
+    repaint();
+}
+
 void WaveForgePageContent::paint (juce::Graphics& g)
 {
     g.fillAll (juce::Colour (0xff111824));
@@ -266,7 +433,7 @@ void WaveForgePageContent::paint (juce::Graphics& g)
 WaveForgeParameterPage::WaveForgeParameterPage (
     WaveForgeProcessor& processor,
     std::initializer_list<std::pair<const char*, const char*>> parameters,
-    bool showWaveform)
+    bool showWaveform, const juce::String& envelopePrefix)
     : audioProcessor (processor)
 {
     addAndMakeVisible (viewport);
@@ -282,6 +449,13 @@ WaveForgeParameterPage::WaveForgeParameterPage (
         content.addAndMakeVisible (*waveform2);
         unisonDisplay = std::make_unique<WaveForgeUnisonDisplay> (processor);
         content.addAndMakeVisible (*unisonDisplay);
+    }
+
+    if (envelopePrefix.isNotEmpty())
+    {
+        envelopeEditor = std::make_unique<WaveForgeEnvelopeEditor> (processor, envelopePrefix,
+                                  envelopePrefix == "amp" ? "AMP ENVELOPE" : "FILTER ENVELOPE");
+        content.addAndMakeVisible (*envelopeEditor);
     }
 
     for (const auto& item : parameters)
@@ -348,7 +522,7 @@ void WaveForgeParameterPage::resized()
     constexpr int cellHeight = 126;
     constexpr int gap = 8;
     const int cellWidth = (width - 32 - gap * (columns - 1)) / columns;
-    const int top = waveform != nullptr ? 254 : 14;
+    const int top = waveform != nullptr ? 394 : (envelopeEditor != nullptr ? 166 : 14);
     const int rows = (int) (controls.size() + (size_t) columns - 1) / columns;
     const int totalHeight = top + rows * (cellHeight + gap) + 14;
     content.setSize (width, juce::jmax (viewport.getHeight(), totalHeight));
@@ -364,6 +538,9 @@ void WaveForgeParameterPage::resized()
         if (unisonDisplay != nullptr)
             unisonDisplay->setBounds (16, 158, width - 32, 82);
     }
+
+    if (envelopeEditor != nullptr)
+        envelopeEditor->setBounds (16, waveform != nullptr ? 248 : 12, width - 32, 132);
 
     for (size_t i = 0; i < controls.size(); ++i)
     {
@@ -506,14 +683,14 @@ WaveForgeEditor::WaveForgeEditor (WaveForgeProcessor& processor)
         { "subLevel", "SUB LEVEL" }, { "noiseLevel", "NOISE LEVEL" },
         { "attack", "AMP ATTACK" }, { "decay", "AMP DECAY" },
         { "sustain", "AMP SUSTAIN" }, { "release", "AMP RELEASE" }
-    }, true), true);
+    }, true, "amp"), true);
 
     tabs.addTab ("FILTER", panel, new WaveForgeParameterPage (processor, {
         { "fType", "FILTER TYPE" }, { "cutoff", "CUTOFF" },
         { "resonance", "RESONANCE" }, { "fEnvAmt", "ENV AMOUNT" },
         { "fAttack", "ENV ATTACK" }, { "fDecay", "ENV DECAY" },
         { "fSustain", "ENV SUSTAIN" }, { "fRelease", "ENV RELEASE" }
-    }), false);
+    }, false, "filter"), false);
 
     tabs.addTab ("MOD", panel, new WaveForgeParameterPage (processor, {
         { "lfo1Shape", "LFO 1 SHAPE" }, { "lfo1Rate", "LFO 1 RATE" },
