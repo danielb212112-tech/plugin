@@ -34,6 +34,7 @@ public:
     void setStateInformation (const void* data, int sizeInBytes) override;
 
     juce::AudioProcessorValueTreeState apvts;
+    std::atomic<float> outputPeakLeft { 0.0f }, outputPeakRight { 0.0f };
 
 private:
     static juce::AudioProcessorValueTreeState::ParameterLayout createLayout();
