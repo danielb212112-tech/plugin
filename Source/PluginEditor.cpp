@@ -63,7 +63,7 @@ void WaveForgeLookAndFeel::drawRotarySlider (juce::Graphics& g, int x, int y, in
     pointer.lineTo (cx + std::cos (angle) * pointerLength,
                     cy + std::sin (angle) * pointerLength);
     g.setColour (textMain);
-    g.strokePath (pointer, juce::PathStrokeType (3.0f, juce::PathStrokeType::rounded));
+    g.strokePath (pointer, juce::PathStrokeType (3.0f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
 
     juce::ignoreUnused (slider);
 }
