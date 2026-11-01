@@ -317,7 +317,7 @@ juce::Point<float> WaveForgeEnvelopeEditor::getHandlePosition (Handle handle) co
     switch (handle)
     {
         case Handle::attack:  return { peakX, bounds.getY() };
-        case Handle::decay:   return { sustainX, bounds.getY() };
+        case Handle::decay:   return { (peakX + sustainX) * 0.5f, (bounds.getY() + sustainY) * 0.5f };
         case Handle::sustain: return { sustainX, sustainY };
         case Handle::release: return { releaseX, bounds.getBottom() };
         default:              return {};
@@ -421,9 +421,13 @@ void WaveForgeEnvelopeEditor::mouseDrag (const juce::MouseEvent& event)
             normalized = (normalized - 0.12f) / 0.20f;
             break;
         case Handle::decay:
-            normalized = (x - plot.getX()) / plot.getWidth();
-            normalized = (normalized - 0.43f) / 0.17f;
+        {
+            const float a = attack != nullptr ? attack->getValue() : 0.0f;
+            const float peakX = 0.12f + 0.20f * a;
+            const float handleX = (x - plot.getX()) / plot.getWidth();
+            normalized = (2.0f * handleX - peakX - 0.43f) / 0.17f;
             break;
+        }
         case Handle::sustain:
             normalized = 1.0f - (y - plot.getY()) / plot.getHeight();
             break;
@@ -708,8 +712,8 @@ WaveForgeLevelMeter::WaveForgeLevelMeter (WaveForgeProcessor& p) : processor (p)
 
 void WaveForgeLevelMeter::timerCallback()
 {
-    smoothLeft = juce::jmax (processor.outputPeakLeft.load (std::memory_order_relaxed), smoothLeft * 0.88f);
-    smoothRight = juce::jmax (processor.outputPeakRight.load (std::memory_order_relaxed), smoothRight * 0.88f);
+    smoothLeft = juce::jmax (processor.outputPeakLeft.exchange (0.0f, std::memory_order_relaxed), smoothLeft * 0.88f);
+    smoothRight = juce::jmax (processor.outputPeakRight.exchange (0.0f, std::memory_order_relaxed), smoothRight * 0.88f);
     repaint();
 }
 
