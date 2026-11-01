@@ -17,7 +17,7 @@ public:
 class WaveForgeWaveDisplay final : public juce::Component, private juce::Timer
 {
 public:
-    explicit WaveForgeWaveDisplay (WaveForgeProcessor&);
+    WaveForgeWaveDisplay (WaveForgeProcessor&, const juce::String& parameterID, const juce::String& displayName);
     void paint (juce::Graphics&) override;
 
 private:
@@ -25,6 +25,7 @@ private:
     static float sampleFrame (int frame, float phase) noexcept;
     WaveForgeProcessor& processor;
     std::atomic<float>* position = nullptr;
+    juce::String displayName;
 };
 
 class WaveForgePageContent final : public juce::Component
@@ -53,6 +54,7 @@ private:
     WaveForgePageContent content;
     juce::Viewport viewport;
     std::unique_ptr<WaveForgeWaveDisplay> waveform;
+    std::unique_ptr<WaveForgeWaveDisplay> waveform2;
     std::vector<std::unique_ptr<juce::Component>> controls;
     std::vector<std::unique_ptr<juce::Label>> labels;
     std::vector<std::unique_ptr<SliderAttachment>> sliderAttachments;
