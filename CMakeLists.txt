@@ -30,6 +30,8 @@ juce_generate_juce_header(WaveForge)
 target_sources(WaveForge PRIVATE
     Source/PluginProcessor.cpp
     Source/PluginProcessor.h
+    Source/PluginEditor.cpp
+    Source/PluginEditor.h
     Source/Voice.h
     Source/Wavetable.h
     Source/Effects.h)
