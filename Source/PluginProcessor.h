@@ -15,11 +15,7 @@ public:
     bool isBusesLayoutSupported (const BusesLayout& layouts) const override;
     void processBlock (juce::AudioBuffer<float>&, juce::MidiBuffer&) override;
 
-    // שלב 1: ממשק גנרי אוטומטי. בשלב מאוחר נחליף בממשק מעוצב.
-    juce::AudioProcessorEditor* createEditor() override
-    {
-        return new juce::GenericAudioProcessorEditor (*this);
-    }
+    juce::AudioProcessorEditor* createEditor() override;
     bool hasEditor() const override { return true; }
 
     const juce::String getName() const override { return JucePlugin_Name; }
