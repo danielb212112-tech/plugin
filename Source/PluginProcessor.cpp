@@ -132,6 +132,64 @@ juce::AudioProcessorValueTreeState::ParameterLayout WaveForgeProcessor::createLa
                                                            NormalisableRange<float> (-1.0f, 1.0f, 0.001f), 0.0f));
     }
 
+    // ---------------- Effects: Distortion ----------------
+    layout.add (std::make_unique<AudioParameterChoice> (
+        ParameterID { "distType", 1 }, "Distortion Type",
+        StringArray { "Soft Clip", "Hard Clip", "Foldback", "Sine Fold" }, 0));
+    layout.add (std::make_unique<AudioParameterFloat> (
+        ParameterID { "distDrive", 1 }, "Distortion Drive (dB)",
+        NormalisableRange<float> (0.0f, 36.0f, 0.1f), 12.0f));
+    layout.add (std::make_unique<AudioParameterFloat> (
+        ParameterID { "distMix", 1 }, "Distortion Mix",
+        NormalisableRange<float> (0.0f, 1.0f, 0.001f), 0.0f));
+
+    // ---------------- Effects: Chorus ----------------
+    layout.add (std::make_unique<AudioParameterFloat> (
+        ParameterID { "chRate", 1 }, "Chorus Rate (Hz)",
+        NormalisableRange<float> (0.05f, 5.0f, 0.01f, 0.5f), 0.8f));
+    layout.add (std::make_unique<AudioParameterFloat> (
+        ParameterID { "chDepth", 1 }, "Chorus Depth",
+        NormalisableRange<float> (0.0f, 1.0f, 0.001f), 0.4f));
+    layout.add (std::make_unique<AudioParameterFloat> (
+        ParameterID { "chFeedback", 1 }, "Chorus Feedback",
+        NormalisableRange<float> (-0.9f, 0.9f, 0.001f), 0.0f));
+    layout.add (std::make_unique<AudioParameterFloat> (
+        ParameterID { "chMix", 1 }, "Chorus Mix",
+        NormalisableRange<float> (0.0f, 1.0f, 0.001f), 0.0f));
+
+    // ---------------- Effects: Delay ----------------
+    layout.add (std::make_unique<AudioParameterChoice> (
+        ParameterID { "dlSync", 1 }, "Delay Sync",
+        StringArray { "Free (ms)", "1/16", "1/8", "1/8 dotted", "1/4", "1/4 dotted", "1/2", "1 bar" }, 0));
+    layout.add (std::make_unique<AudioParameterFloat> (
+        ParameterID { "dlTime", 1 }, "Delay Time (ms)",
+        NormalisableRange<float> (1.0f, 2000.0f, 0.1f, 0.4f), 350.0f));
+    layout.add (std::make_unique<AudioParameterFloat> (
+        ParameterID { "dlFeedback", 1 }, "Delay Feedback",
+        NormalisableRange<float> (0.0f, 0.95f, 0.001f), 0.35f));
+    layout.add (std::make_unique<AudioParameterFloat> (
+        ParameterID { "dlTone", 1 }, "Delay Tone (Hz)",
+        NormalisableRange<float> (200.0f, 20000.0f, 1.0f, 0.3f), 8000.0f));
+    layout.add (std::make_unique<AudioParameterBool> (
+        ParameterID { "dlPing", 1 }, "Delay Ping-Pong", false));
+    layout.add (std::make_unique<AudioParameterFloat> (
+        ParameterID { "dlMix", 1 }, "Delay Mix",
+        NormalisableRange<float> (0.0f, 1.0f, 0.001f), 0.0f));
+
+    // ---------------- Effects: Reverb ----------------
+    layout.add (std::make_unique<AudioParameterFloat> (
+        ParameterID { "rvSize", 1 }, "Reverb Size",
+        NormalisableRange<float> (0.0f, 1.0f, 0.001f), 0.5f));
+    layout.add (std::make_unique<AudioParameterFloat> (
+        ParameterID { "rvDamp", 1 }, "Reverb Damping",
+        NormalisableRange<float> (0.0f, 1.0f, 0.001f), 0.5f));
+    layout.add (std::make_unique<AudioParameterFloat> (
+        ParameterID { "rvWidth", 1 }, "Reverb Width",
+        NormalisableRange<float> (0.0f, 1.0f, 0.001f), 1.0f));
+    layout.add (std::make_unique<AudioParameterFloat> (
+        ParameterID { "rvMix", 1 }, "Reverb Mix",
+        NormalisableRange<float> (0.0f, 1.0f, 0.001f), 0.0f));
+
     // ---------------- Output ----------------
     layout.add (std::make_unique<AudioParameterFloat> (
         ParameterID { "gain", 1 }, "Gain",
@@ -147,6 +205,22 @@ void WaveForgeProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
     for (int i = 0; i < synth.getNumVoices(); ++i)
         if (auto* v = dynamic_cast<SynthVoice*> (synth.getVoice (i)))
             v->prepare (sampleRate, samplesPerBlock);
+
+    // ---- אפקטים ----
+    maxBlock = juce::jmax (1, samplesPerBlock);
+    const juce::dsp::ProcessSpec spec { sampleRate, (juce::uint32) maxBlock, 2 };
+
+    distortion.prepare (sampleRate, maxBlock);
+    setLatencySamples ((int) std::round (distortion.getLatencySamples()));
+
+    chorus.prepare (spec);
+    chorus.reset();
+    reverb.prepare (spec);
+    reverb.reset();
+    delay.prepare (sampleRate);
+
+    chorusActive = delayActive = reverbActive = false;
+    lastGain = juce::Decibels::decibelsToGain (apvts.getRawParameterValue ("gain")->load());
 }
 
 bool WaveForgeProcessor::isBusesLayoutSupported (const BusesLayout& layouts) const
@@ -203,7 +277,99 @@ void WaveForgeProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::M
 
     synth.renderNextBlock (buffer, midi, 0, buffer.getNumSamples());
 
-    buffer.applyGain (juce::Decibels::decibelsToGain (get ("gain")));
+    // ======================= שרשרת אפקטים =======================
+    const int numSamples = buffer.getNumSamples();
+
+    // מפצל לחתיכות בגודל שהוכן ב-prepareToPlay (חלק מהאפקטים דורשים זאת)
+    auto runChunks = [&] (auto&& fn)
+    {
+        juce::dsp::AudioBlock<float> whole (buffer);
+        for (int start = 0; start < numSamples; start += maxBlock)
+        {
+            auto sub = whole.getSubBlock ((size_t) start, (size_t) juce::jmin (maxBlock, numSamples - start));
+            fn (sub);
+        }
+    };
+
+    // 1. Distortion
+    const float distMix = get ("distMix");
+    if (distMix > 0.0001f)
+    {
+        distortion.setParams ((int) get ("distType"), get ("distDrive"), distMix);
+        distortion.process (buffer);
+    }
+
+    // 2. Chorus
+    const float chMix = get ("chMix");
+    if (chMix > 0.0001f)
+    {
+        chorus.setRate (get ("chRate"));
+        chorus.setDepth (get ("chDepth"));
+        chorus.setFeedback (get ("chFeedback"));
+        chorus.setMix (chMix);
+        runChunks ([&] (auto& sub) { chorus.process (juce::dsp::ProcessContextReplacing<float> (sub)); });
+        chorusActive = true;
+    }
+    else if (chorusActive)
+    {
+        chorus.reset();
+        chorusActive = false;
+    }
+
+    // 3. Delay (אפשר לסנכרן לטמפו של ה-DAW)
+    const float dlMix = get ("dlMix");
+    if (dlMix > 0.0001f)
+    {
+        float timeMs = get ("dlTime");
+        const int sync = (int) get ("dlSync");
+
+        if (sync > 0)
+        {
+            double bpm = 120.0;
+            if (auto* ph = getPlayHead())
+                if (auto position = ph->getPosition())
+                    if (auto b = position->getBpm())
+                        bpm = *b;
+
+            static const double beats[] = { 0.0, 0.25, 0.5, 0.75, 1.0, 1.5, 2.0, 4.0 };
+            timeMs = (float) (60000.0 / juce::jmax (20.0, bpm) * beats[juce::jlimit (0, 7, sync)]);
+        }
+
+        delay.setParams (timeMs, get ("dlFeedback"), get ("dlTone"), get ("dlPing") > 0.5f, dlMix);
+        delay.process (buffer);
+        delayActive = true;
+    }
+    else if (delayActive)
+    {
+        delay.reset();
+        delayActive = false;
+    }
+
+    // 4. Reverb
+    const float rvMix = get ("rvMix");
+    if (rvMix > 0.0001f)
+    {
+        juce::Reverb::Parameters rp;
+        rp.roomSize   = get ("rvSize");
+        rp.damping    = get ("rvDamp");
+        rp.width      = get ("rvWidth");
+        rp.wetLevel   = rvMix * 0.4f;            // ה-Reverb מכפיל פנימית ב-3
+        rp.dryLevel   = 0.5f * (1.0f - rvMix);   // ומכפיל את היבש ב-2
+        rp.freezeMode = 0.0f;
+        reverb.setParameters (rp);
+        runChunks ([&] (auto& sub) { reverb.process (juce::dsp::ProcessContextReplacing<float> (sub)); });
+        reverbActive = true;
+    }
+    else if (reverbActive)
+    {
+        reverb.reset();
+        reverbActive = false;
+    }
+
+    // ======================= ווליום ראשי (עם ramp נגד קליקים) =======================
+    const float newGain = juce::Decibels::decibelsToGain (get ("gain"));
+    buffer.applyGainRamp (0, numSamples, lastGain, newGain);
+    lastGain = newGain;
 }
 
 void WaveForgeProcessor::getStateInformation (juce::MemoryBlock& destData)

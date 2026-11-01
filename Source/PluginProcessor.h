@@ -2,6 +2,7 @@
 
 #include <JuceHeader.h>
 #include "Voice.h"
+#include "Effects.h"
 
 class WaveForgeProcessor : public juce::AudioProcessor
 {
@@ -25,7 +26,7 @@ public:
     bool acceptsMidi() const override  { return true; }
     bool producesMidi() const override { return false; }
     bool isMidiEffect() const override { return false; }
-    double getTailLengthSeconds() const override { return 2.0; }
+    double getTailLengthSeconds() const override { return 6.0; }
 
     int getNumPrograms() override { return 1; }
     int getCurrentProgram() override { return 0; }
@@ -50,6 +51,16 @@ private:
     static constexpr int numVoices = 8;
     WavetableBank bank;          // חייב להיות לפני synth (הקולות מחזיקים הפניה אליו)
     juce::Synthesiser synth;
+
+    // ---- שרשרת אפקטים: Distortion -> Chorus -> Delay -> Reverb ----
+    DistortionFx distortion;
+    juce::dsp::Chorus<float> chorus;
+    StereoDelay delay;
+    juce::dsp::Reverb reverb;
+
+    int   maxBlock = 512;
+    bool  chorusActive = false, delayActive = false, reverbActive = false;
+    float lastGain = 1.0f;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (WaveForgeProcessor)
 };
