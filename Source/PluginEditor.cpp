@@ -273,7 +273,7 @@ juce::Point<float> WaveForgeEnvelopeEditor::getHandlePosition (Handle handle) co
     auto bounds = getLocalBounds().toFloat().reduced (18.0f, 28.0f);
     const auto norm = [] (juce::RangedAudioParameter* p)
     {
-        return p != nullptr ? p->convertTo0to1 (p->getValue()) : 0.0f;
+        return p != nullptr ? p->getValue() : 0.0f;
     };
     const float a = norm (attack);
     const float d = norm (decay);
@@ -680,16 +680,12 @@ WaveForgeEditor::WaveForgeEditor (WaveForgeProcessor& processor)
         { "uniDetune", "DETUNE" }, { "uniSpread", "STEREO SPREAD" },
         { "osc2On", "OSCILLATOR 2" }, { "osc2Pos", "OSC 2 POSITION" },
         { "osc2Level", "OSC 2 LEVEL" }, { "osc2Semi", "OSC 2 SEMITONES" },
-        { "subLevel", "SUB LEVEL" }, { "noiseLevel", "NOISE LEVEL" },
-        { "attack", "AMP ATTACK" }, { "decay", "AMP DECAY" },
-        { "sustain", "AMP SUSTAIN" }, { "release", "AMP RELEASE" }
+        { "subLevel", "SUB LEVEL" }, { "noiseLevel", "NOISE LEVEL" }
     }, true, "amp"), true);
 
     tabs.addTab ("FILTER", panel, new WaveForgeParameterPage (processor, {
         { "fType", "FILTER TYPE" }, { "cutoff", "CUTOFF" },
-        { "resonance", "RESONANCE" }, { "fEnvAmt", "ENV AMOUNT" },
-        { "fAttack", "ENV ATTACK" }, { "fDecay", "ENV DECAY" },
-        { "fSustain", "ENV SUSTAIN" }, { "fRelease", "ENV RELEASE" }
+        { "resonance", "RESONANCE" }, { "fEnvAmt", "ENV AMOUNT" }
     }, false, "filter"), false);
 
     tabs.addTab ("MOD", panel, new WaveForgeParameterPage (processor, {
