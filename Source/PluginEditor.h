@@ -50,8 +50,8 @@ public:
 private:
     WaveForgeProcessor& audioProcessor;
     WaveForgeLookAndFeel lookAndFeel;
-    juce::Viewport viewport;
     WaveForgePageContent content;
+    juce::Viewport viewport;
     std::unique_ptr<WaveForgeWaveDisplay> waveform;
     std::vector<std::unique_ptr<juce::Component>> controls;
     std::vector<std::unique_ptr<juce::Label>> labels;
