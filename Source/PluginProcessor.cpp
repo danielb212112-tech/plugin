@@ -67,6 +67,24 @@ juce::AudioProcessorValueTreeState::ParameterLayout WaveForgeProcessor::createLa
         ParameterID { "uniSpread", 1 }, "Unison Stereo Spread",
         NormalisableRange<float> (0.0f, 1.0f, 0.001f), 0.7f));
 
+    // ---------------- Oscillator 2 / Sub / Noise ----------------
+    layout.add (std::make_unique<AudioParameterBool> (
+        ParameterID { "osc2On", 1 }, "Oscillator 2 On", false));
+    layout.add (std::make_unique<AudioParameterFloat> (
+        ParameterID { "osc2Pos", 1 }, "Oscillator 2 WT Position",
+        NormalisableRange<float> (0.0f, 1.0f, 0.001f), 2.0f / 7.0f));
+    layout.add (std::make_unique<AudioParameterFloat> (
+        ParameterID { "osc2Level", 1 }, "Oscillator 2 Level",
+        NormalisableRange<float> (0.0f, 1.0f, 0.001f), 0.0f));
+    layout.add (std::make_unique<AudioParameterInt> (
+        ParameterID { "osc2Semi", 1 }, "Oscillator 2 Semitones", -24, 24, 0));
+    layout.add (std::make_unique<AudioParameterFloat> (
+        ParameterID { "subLevel", 1 }, "Sub Level",
+        NormalisableRange<float> (0.0f, 1.0f, 0.001f), 0.0f));
+    layout.add (std::make_unique<AudioParameterFloat> (
+        ParameterID { "noiseLevel", 1 }, "Noise Level",
+        NormalisableRange<float> (0.0f, 1.0f, 0.001f), 0.0f));
+
     // ---------------- Amp envelope ----------------
     layout.add (std::make_unique<AudioParameterFloat> (ParameterID { "attack", 1 },  "Amp Attack",  timeRange, 0.01f));
     layout.add (std::make_unique<AudioParameterFloat> (ParameterID { "decay", 1 },   "Amp Decay",   timeRange, 0.3f));
@@ -240,6 +258,13 @@ void WaveForgeProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::M
     p.unisonVoices = (int) get ("uniVoices");
     p.unisonDetune = get ("uniDetune");
     p.unisonSpread = get ("uniSpread");
+
+    p.osc2Enabled    = get ("osc2On") > 0.5f;
+    p.osc2WtPosition = get ("osc2Pos");
+    p.osc2Level      = get ("osc2Level");
+    p.osc2Semitones  = (int) get ("osc2Semi");
+    p.subLevel       = get ("subLevel");
+    p.noiseLevel     = get ("noiseLevel");
 
     p.ampEnv.attack  = get ("attack");
     p.ampEnv.decay   = get ("decay");
