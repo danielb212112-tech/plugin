@@ -19,12 +19,17 @@ class WaveForgeWaveDisplay final : public juce::Component, private juce::Timer
 public:
     WaveForgeWaveDisplay (WaveForgeProcessor&, const juce::String& parameterID, const juce::String& displayName);
     void paint (juce::Graphics&) override;
+    void mouseDown (const juce::MouseEvent&) override;
+    void mouseDrag (const juce::MouseEvent&) override;
+    void mouseUp (const juce::MouseEvent&) override;
 
 private:
     void timerCallback() override;
     static float sampleFrame (int frame, float phase) noexcept;
     WaveForgeProcessor& processor;
     std::atomic<float>* position = nullptr;
+    juce::RangedAudioParameter* positionParameter = nullptr;
+    bool dragging = false;
     juce::String displayName;
 };
 
@@ -113,6 +118,8 @@ private:
     juce::Viewport viewport;
     std::array<std::unique_ptr<WaveForgeLfoDisplay>, 2> lfoDisplays;
     std::array<std::unique_ptr<juce::Label>, 2> lfoLabels;
+    std::unique_ptr<juce::Label> matrixTitle;
+    std::unique_ptr<juce::Label> matrixHint;
     std::array<std::unique_ptr<juce::Label>, 4> routeLabels;
     std::array<std::unique_ptr<juce::Label>, 4> routeReadouts;
     std::array<std::unique_ptr<juce::ComboBox>, 2> shape;
