@@ -3,6 +3,21 @@
 #include <JuceHeader.h>
 
 // ---------------------------------------------------------------------------
+// פרמטרים שה-Processor שולח לכל קול בתחילת כל בלוק
+// ---------------------------------------------------------------------------
+struct VoiceParams
+{
+    int waveform = 1;                  // 0 Sine, 1 Saw, 2 Square, 3 Triangle
+    juce::ADSR::Parameters ampEnv;
+
+    int   filterType      = 0;         // 0 Low-pass, 1 Band-pass, 2 High-pass
+    float cutoff          = 3000.0f;   // Hz
+    float resonance       = 0.2f;      // 0..1
+    float filterEnvAmount = 0.0f;      // באוקטבות, -6..+6
+    juce::ADSR::Parameters filterEnv;
+};
+
+// ---------------------------------------------------------------------------
 // Sound: מגדיר שכל הנוטות מנוגנות על ידי אותו "סאונד"
 // ---------------------------------------------------------------------------
 struct SynthSound : public juce::SynthesiserSound
@@ -12,7 +27,7 @@ struct SynthSound : public juce::SynthesiserSound
 };
 
 // ---------------------------------------------------------------------------
-// Voice: קול אחד בפוליפוניה. אוסצילטור + מעטפת ADSR
+// Voice: אוסצילטור -> פילטר -> ווליום (ADSR)
 // ---------------------------------------------------------------------------
 class SynthVoice : public juce::SynthesiserVoice
 {
@@ -24,17 +39,32 @@ public:
         return dynamic_cast<SynthSound*> (s) != nullptr;
     }
 
-    void prepare (double sampleRate)
+    void prepare (double sampleRate, int maxBlockSize)
     {
         setCurrentPlaybackSampleRate (sampleRate);
-        adsr.setSampleRate (sampleRate);
+        ampAdsr.setSampleRate (sampleRate);
+        filterAdsr.setSampleRate (sampleRate);
+
+        juce::dsp::ProcessSpec spec { sampleRate, (juce::uint32) juce::jmax (1, maxBlockSize), 1 };
+        filter.prepare (spec);
+        filter.reset();
     }
 
     // נקרא פעם בכל בלוק מה-Processor
-    void setParameters (int newWaveform, const juce::ADSR::Parameters& p)
+    void setParameters (const VoiceParams& p)
     {
-        waveform = newWaveform;
-        adsr.setParameters (p);
+        params = p;
+
+        ampAdsr.setParameters (p.ampEnv);
+        filterAdsr.setParameters (p.filterEnv);
+
+        using FT = juce::dsp::StateVariableTPTFilterType;
+        filter.setType (p.filterType == 1 ? FT::bandpass
+                      : p.filterType == 2 ? FT::highpass
+                                          : FT::lowpass);
+
+        // Resonance 0..1  ->  Q של 0.707 עד ~11
+        filter.setResonance (0.707f + p.resonance * 10.0f);
     }
 
     void startNote (int midiNote, float velocity, juce::SynthesiserSound*, int) override
@@ -42,18 +72,22 @@ public:
         frequency = juce::MidiMessage::getMidiNoteInHertz (midiNote);
         level     = velocity;
         phase     = 0.0;
-        adsr.noteOn();
+        filter.reset();
+        ampAdsr.noteOn();
+        filterAdsr.noteOn();
     }
 
     void stopNote (float, bool allowTailOff) override
     {
         if (allowTailOff)
         {
-            adsr.noteOff();
+            ampAdsr.noteOff();
+            filterAdsr.noteOff();
         }
         else
         {
-            adsr.reset();
+            ampAdsr.reset();
+            filterAdsr.reset();
             clearCurrentNote();
         }
     }
@@ -66,22 +100,31 @@ public:
         if (! isVoiceActive())
             return;
 
-        const auto sr = getSampleRate();
-        const auto dt = (float) (frequency / sr);
+        const auto sr       = getSampleRate();
+        const auto dt       = (float) (frequency / sr);
+        const float maxFreq = (float) (sr * 0.45);
 
         for (int i = 0; i < numSamples; ++i)
         {
-            const float env    = adsr.getNextSample();
-            const float sample = generate ((float) phase, dt) * env * level * 0.25f;
+            // Cutoff = בסיס * 2^(כמות * מעטפת)
+            const float fEnv   = filterAdsr.getNextSample();
+            const float cutoff = juce::jlimit (20.0f, maxFreq,
+                                    params.cutoff * std::pow (2.0f, params.filterEnvAmount * fEnv));
+            filter.setCutoffFrequency (cutoff);
+
+            const float osc  = generate ((float) phase, dt);
+            const float filt = filter.processSample (0, osc);
+            const float env  = ampAdsr.getNextSample();
+            const float out  = filt * env * level * 0.25f;
 
             for (int ch = 0; ch < output.getNumChannels(); ++ch)
-                output.addSample (ch, startSample + i, sample);
+                output.addSample (ch, startSample + i, out);
 
             phase += (double) dt;
             if (phase >= 1.0)
                 phase -= 1.0;
 
-            if (! adsr.isActive())
+            if (! ampAdsr.isActive())
             {
                 clearCurrentNote();
                 break;
@@ -108,7 +151,7 @@ private:
 
     float generate (float t, float dt) const
     {
-        switch (waveform)
+        switch (params.waveform)
         {
             case Sine:
                 return std::sin (juce::MathConstants<float>::twoPi * t);
@@ -132,9 +175,12 @@ private:
         }
     }
 
-    juce::ADSR adsr;
+    VoiceParams params;
+
+    juce::ADSR ampAdsr, filterAdsr;
+    juce::dsp::StateVariableTPTFilter<float> filter;
+
     double frequency = 440.0;
     double phase     = 0.0;
     float  level     = 0.0f;
-    int    waveform  = Saw;
 };

@@ -15,26 +15,47 @@ juce::AudioProcessorValueTreeState::ParameterLayout WaveForgeProcessor::createLa
     using namespace juce;
     AudioProcessorValueTreeState::ParameterLayout layout;
 
+    const NormalisableRange<float> timeRange (0.001f, 5.0f, 0.001f, 0.35f);
+
+    // ---------------- Oscillator ----------------
     layout.add (std::make_unique<AudioParameterChoice> (
         ParameterID { "wave", 1 }, "Waveform",
         StringArray { "Sine", "Saw", "Square", "Triangle" }, 1));
 
-    layout.add (std::make_unique<AudioParameterFloat> (
-        ParameterID { "attack", 1 }, "Attack",
-        NormalisableRange<float> (0.001f, 5.0f, 0.001f, 0.35f), 0.01f));
+    // ---------------- Amp envelope ----------------
+    layout.add (std::make_unique<AudioParameterFloat> (ParameterID { "attack", 1 },  "Amp Attack",  timeRange, 0.01f));
+    layout.add (std::make_unique<AudioParameterFloat> (ParameterID { "decay", 1 },   "Amp Decay",   timeRange, 0.3f));
+    layout.add (std::make_unique<AudioParameterFloat> (ParameterID { "sustain", 1 }, "Amp Sustain",
+                                                       NormalisableRange<float> (0.0f, 1.0f, 0.001f), 0.7f));
+    layout.add (std::make_unique<AudioParameterFloat> (ParameterID { "release", 1 }, "Amp Release",
+                                                       NormalisableRange<float> (0.001f, 8.0f, 0.001f, 0.35f), 0.4f));
+
+    // ---------------- Filter ----------------
+    layout.add (std::make_unique<AudioParameterChoice> (
+        ParameterID { "fType", 1 }, "Filter Type",
+        StringArray { "Low-pass", "Band-pass", "High-pass" }, 0));
 
     layout.add (std::make_unique<AudioParameterFloat> (
-        ParameterID { "decay", 1 }, "Decay",
-        NormalisableRange<float> (0.001f, 5.0f, 0.001f, 0.35f), 0.3f));
+        ParameterID { "cutoff", 1 }, "Filter Cutoff",
+        NormalisableRange<float> (20.0f, 20000.0f, 0.1f, 0.25f), 3000.0f));
 
     layout.add (std::make_unique<AudioParameterFloat> (
-        ParameterID { "sustain", 1 }, "Sustain",
-        NormalisableRange<float> (0.0f, 1.0f, 0.001f), 0.7f));
+        ParameterID { "resonance", 1 }, "Filter Resonance",
+        NormalisableRange<float> (0.0f, 1.0f, 0.001f), 0.2f));
 
     layout.add (std::make_unique<AudioParameterFloat> (
-        ParameterID { "release", 1 }, "Release",
-        NormalisableRange<float> (0.001f, 8.0f, 0.001f, 0.35f), 0.4f));
+        ParameterID { "fEnvAmt", 1 }, "Filter Env Amount (oct)",
+        NormalisableRange<float> (-6.0f, 6.0f, 0.01f), 0.0f));
 
+    // ---------------- Filter envelope ----------------
+    layout.add (std::make_unique<AudioParameterFloat> (ParameterID { "fAttack", 1 },  "Filter Attack",  timeRange, 0.01f));
+    layout.add (std::make_unique<AudioParameterFloat> (ParameterID { "fDecay", 1 },   "Filter Decay",   timeRange, 0.4f));
+    layout.add (std::make_unique<AudioParameterFloat> (ParameterID { "fSustain", 1 }, "Filter Sustain",
+                                                       NormalisableRange<float> (0.0f, 1.0f, 0.001f), 0.3f));
+    layout.add (std::make_unique<AudioParameterFloat> (ParameterID { "fRelease", 1 }, "Filter Release",
+                                                       NormalisableRange<float> (0.001f, 8.0f, 0.001f, 0.35f), 0.4f));
+
+    // ---------------- Output ----------------
     layout.add (std::make_unique<AudioParameterFloat> (
         ParameterID { "gain", 1 }, "Gain",
         NormalisableRange<float> (-48.0f, 6.0f, 0.1f), -6.0f));
@@ -42,13 +63,13 @@ juce::AudioProcessorValueTreeState::ParameterLayout WaveForgeProcessor::createLa
     return layout;
 }
 
-void WaveForgeProcessor::prepareToPlay (double sampleRate, int)
+void WaveForgeProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
 {
     synth.setCurrentPlaybackSampleRate (sampleRate);
 
     for (int i = 0; i < synth.getNumVoices(); ++i)
         if (auto* v = dynamic_cast<SynthVoice*> (synth.getVoice (i)))
-            v->prepare (sampleRate);
+            v->prepare (sampleRate, samplesPerBlock);
 }
 
 bool WaveForgeProcessor::isBusesLayoutSupported (const BusesLayout& layouts) const
@@ -61,22 +82,33 @@ void WaveForgeProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::M
     juce::ScopedNoDenormals noDenormals;
     buffer.clear();
 
-    // קריאת פרמטרים ועדכון כל הקולות
-    juce::ADSR::Parameters env;
-    env.attack  = apvts.getRawParameterValue ("attack")->load();
-    env.decay   = apvts.getRawParameterValue ("decay")->load();
-    env.sustain = apvts.getRawParameterValue ("sustain")->load();
-    env.release = apvts.getRawParameterValue ("release")->load();
-    const int wave = (int) apvts.getRawParameterValue ("wave")->load();
+    auto get = [this] (const char* id) { return apvts.getRawParameterValue (id)->load(); };
+
+    VoiceParams p;
+    p.waveform = (int) get ("wave");
+
+    p.ampEnv.attack  = get ("attack");
+    p.ampEnv.decay   = get ("decay");
+    p.ampEnv.sustain = get ("sustain");
+    p.ampEnv.release = get ("release");
+
+    p.filterType      = (int) get ("fType");
+    p.cutoff          = get ("cutoff");
+    p.resonance       = get ("resonance");
+    p.filterEnvAmount = get ("fEnvAmt");
+
+    p.filterEnv.attack  = get ("fAttack");
+    p.filterEnv.decay   = get ("fDecay");
+    p.filterEnv.sustain = get ("fSustain");
+    p.filterEnv.release = get ("fRelease");
 
     for (int i = 0; i < synth.getNumVoices(); ++i)
         if (auto* v = dynamic_cast<SynthVoice*> (synth.getVoice (i)))
-            v->setParameters (wave, env);
+            v->setParameters (p);
 
     synth.renderNextBlock (buffer, midi, 0, buffer.getNumSamples());
 
-    const float gainDb = apvts.getRawParameterValue ("gain")->load();
-    buffer.applyGain (juce::Decibels::decibelsToGain (gainDb));
+    buffer.applyGain (juce::Decibels::decibelsToGain (get ("gain")));
 }
 
 void WaveForgeProcessor::getStateInformation (juce::MemoryBlock& destData)
