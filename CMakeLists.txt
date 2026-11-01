@@ -49,3 +49,24 @@ target_link_libraries(WaveForge
         juce::juce_recommended_config_flags
         juce::juce_recommended_lto_flags
         juce::juce_recommended_warning_flags)
+
+# Offline DSP smoke checks: no audio device or host needed.
+juce_add_console_app(WaveForgeSoundSmoke
+    PRODUCT_NAME "WaveForge Sound Smoke")
+
+juce_generate_juce_header(WaveForgeSoundSmoke)
+target_sources(WaveForgeSoundSmoke PRIVATE
+    Tests/SoundSmoke.cpp
+    Source/Voice.h
+    Source/Wavetable.h)
+target_compile_definitions(WaveForgeSoundSmoke PRIVATE
+    JUCE_WEB_BROWSER=0
+    JUCE_USE_CURL=0)
+target_link_libraries(WaveForgeSoundSmoke PRIVATE
+    juce::juce_audio_utils
+    juce::juce_dsp
+    juce::juce_recommended_config_flags
+    juce::juce_recommended_warning_flags)
+
+enable_testing()
+add_test(NAME WaveForgeSoundSmoke COMMAND WaveForgeSoundSmoke)
