@@ -51,6 +51,9 @@ struct VoiceParams
     float cutoff          = 3000.0f;
     float resonance       = 0.2f;
     float filterEnvAmount = 0.0f;
+    int   filterSlope     = 0;      // 0 = 12 dB/oct, 1 = 24 dB/oct
+    float filterKeyTrack  = 0.0f;   // 0..1; MIDI note 60 is the reference
+    float filterDriveDb   = 0.0f;   // 0..18 dB of soft input saturation
     juce::ADSR::Parameters filterEnv;
 
     // Modulation
@@ -90,6 +93,8 @@ public:
         juce::dsp::ProcessSpec spec { sampleRate, (juce::uint32) juce::jmax (1, maxBlockSize), 2 };
         filter.prepare (spec);
         filter.reset();
+        filterSecond.prepare (spec);
+        filterSecond.reset();
 
         // Sample-accurate smoothing of pitch, wavetable motion, output and
         // filter controls prevents zippering during automation and fast LFOs.
@@ -102,6 +107,8 @@ public:
         osc2GainSmooth.reset (sampleRate, 0.004);
         subGainSmooth.reset (sampleRate, 0.004);
         noiseGainSmooth.reset (sampleRate, 0.004);
+        slopeSmooth.reset (sampleRate, 0.012);
+        driveSmooth.reset (sampleRate, 0.008);
     }
 
     void setParameters (const VoiceParams& p)
@@ -112,14 +119,17 @@ public:
         filterAdsr.setParameters (p.filterEnv);
 
         using FT = juce::dsp::StateVariableTPTFilterType;
-        filter.setType (p.filterType == 1 ? FT::bandpass
-                      : p.filterType == 2 ? FT::highpass
-                                          : FT::lowpass);
+        const auto type = p.filterType == 1 ? FT::bandpass
+                        : p.filterType == 2 ? FT::highpass
+                                            : FT::lowpass;
+        filter.setType (type);
+        filterSecond.setType (type);
     }
 
     void startNote (int midiNote, float velocity, juce::SynthesiserSound*, int) override
     {
         frequency = juce::MidiMessage::getMidiNoteInHertz (midiNote);
+        noteNumber = midiNote;
         level     = velocity;
 
         subPhase = 0.0;
@@ -154,8 +164,11 @@ public:
         osc2GainSmooth.setCurrentAndTargetValue (0.0f);
         subGainSmooth.setCurrentAndTargetValue (0.0f);
         noiseGainSmooth.setCurrentAndTargetValue (0.0f);
+        slopeSmooth.setCurrentAndTargetValue (params.filterSlope != 0 ? 1.0f : 0.0f);
+        driveSmooth.setCurrentAndTargetValue (juce::jlimit (0.0f, 18.0f, params.filterDriveDb));
 
         filter.reset();
+        filterSecond.reset();
         ampAdsr.noteOn();
         filterAdsr.noteOn();
     }
@@ -238,8 +251,17 @@ public:
             const float noiseGain = noiseGainSmooth.getNextValue();
             const float voiceGain = volumeSmooth.getNextValue();
 
-            filter.setCutoffFrequency (cutoffSmooth.getNextValue());
-            filter.setResonance (0.707f + resonanceSmooth.getNextValue() * 7.0f);
+            const float smoothCutoff = cutoffSmooth.getNextValue();
+            // Cascading two 12dB state-variable stages gives 24dB/oct.
+            // Both stages always run, so switching slopes can crossfade without
+            // discontinuities or stale filter state.
+            const float q = 0.707f + resonanceSmooth.getNextValue() * 7.0f;
+            filter.setCutoffFrequency (smoothCutoff);
+            filter.setResonance (q);
+            filterSecond.setCutoffFrequency (smoothCutoff);
+            filterSecond.setResonance (q);
+            const float slopeBlend = slopeSmooth.getNextValue();
+            const float driveDb = driveSmooth.getNextValue();
 
             float oscL = 0.0f, oscR = 0.0f;
 
@@ -295,9 +317,26 @@ public:
             oscL += sub + (random.nextFloat() * 2.0f - 1.0f) * noiseGain;
             oscR += sub + (random.nextFloat() * 2.0f - 1.0f) * noiseGain;
 
+            // An optional gentle pre-filter saturator adds character while
+            // leaving legacy presets bit-for-bit clean at Drive = 0 dB.
+            // A separate 4x-oversampled Distortion FX is available for heavy
+            // nonlinear processing; this filter drive is deliberately moderate.
+            if (driveDb > 0.00001f)
+            {
+                const float gain = juce::Decibels::decibelsToGain (driveDb);
+                const float normalize = 1.0f / std::tanh (gain);
+                const float wetAmount = juce::jlimit (0.0f, 1.0f, driveDb / 18.0f);
+                oscL += wetAmount * (std::tanh (oscL * gain) * normalize - oscL);
+                oscR += wetAmount * (std::tanh (oscR * gain) * normalize - oscR);
+            }
+
+            const float firstL = filter.processSample (0, oscL);
+            const float firstR = filter.processSample (1, oscR);
+            const float secondL = filterSecond.processSample (0, firstL);
+            const float secondR = filterSecond.processSample (1, firstR);
             const float amp = ampAdsr.getNextSample() * level * 0.25f * voiceGain;
-            const float outL = filter.processSample (0, oscL) * amp;
-            const float outR = filter.processSample (1, oscR) * amp;
+            const float outL = (firstL + slopeBlend * (secondL - firstL)) * amp;
+            const float outR = (firstR + slopeBlend * (secondR - firstR)) * amp;
 
             if (output.getNumChannels() >= 2)
             {
@@ -407,12 +446,18 @@ private:
         const float pitch = juce::jlimit (-48.0f, 48.0f, pitchSemis);
         pitchRatioSmooth.setTargetValue (std::pow (2.0f, pitch / 12.0f));
 
+        // 100% key tracking shifts cutoff by one octave per MIDI octave.
+        // Middle C (60) stays at the user's selected cutoff frequency.
+        const float keyOctaves = juce::jlimit (0.0f, 1.0f, params.filterKeyTrack)
+            * ((float) noteNumber - 60.0f) / 12.0f;
         const float maxFreq = (float) (sr * 0.45);
         const float cutoff = juce::jlimit (20.0f, maxFreq,
             params.cutoff * std::pow (2.0f,
                 juce::jlimit (-16.0f, 16.0f,
-                    params.filterEnvAmount * filterEnvValue + cutOct)));
+                    params.filterEnvAmount * filterEnvValue + cutOct + keyOctaves)));
         cutoffSmooth.setTargetValue (cutoff);
+        slopeSmooth.setTargetValue (params.filterSlope == 0 ? 0.0f : 1.0f);
+        driveSmooth.setTargetValue (juce::jlimit (0.0f, 18.0f, params.filterDriveDb));
         resonanceSmooth.setTargetValue (
             juce::jlimit (0.0f, 1.0f, params.resonance + resMod));
         volumeSmooth.setTargetValue (juce::jlimit (0.0f, 2.0f, 1.0f + volAdd));
@@ -427,7 +472,7 @@ private:
     VoiceParams params;
 
     juce::ADSR ampAdsr, filterAdsr;
-    juce::dsp::StateVariableTPTFilter<float> filter;
+    juce::dsp::StateVariableTPTFilter<float> filter, filterSecond;
 
     std::array<double, maxUnison> phases {}, phases2 {}, baseFreq {};
     std::array<float, maxUnison> gL {}, gR {};
@@ -439,6 +484,7 @@ private:
     juce::SmoothedValue<float, juce::ValueSmoothingTypes::Multiplicative> cutoffSmooth;
     juce::SmoothedValue<float> resonanceSmooth, volumeSmooth;
     juce::SmoothedValue<float> osc2GainSmooth, subGainSmooth, noiseGainSmooth;
+    juce::SmoothedValue<float> slopeSmooth, driveSmooth;
 
     std::array<LfoState, 2> lfoState {};
     juce::Random random;
@@ -449,5 +495,6 @@ private:
     bool modulationStarted = false;
 
     double frequency = 440.0;
-    float  level     = 0.0f;
+    int noteNumber = 69;
+    float level = 0.0f;
 };
