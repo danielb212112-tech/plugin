@@ -32,7 +32,11 @@ public:
     void resized() override;
 
 private:
+    WaveForgeProcessor& audioProcessor;
     juce::Label title;
     juce::Label subtitle;
+    juce::TextButton savePreset { "SAVE PRESET" };
+    juce::TextButton loadPreset { "LOAD PRESET" };
+    std::unique_ptr<juce::FileChooser> fileChooser;
     juce::TabbedComponent tabs { juce::TabbedButtonBar::TabsAtTop };
 };
