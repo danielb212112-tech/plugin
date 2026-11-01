@@ -396,6 +396,11 @@ void WaveForgeProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::M
     const float newGain = juce::Decibels::decibelsToGain (get ("gain"));
     buffer.applyGainRamp (0, numSamples, lastGain, newGain);
     lastGain = newGain;
+    if (numSamples > 0 && buffer.getNumChannels() >= 2)
+    {
+        outputPeakLeft.store (buffer.getMagnitude (0, 0, numSamples), std::memory_order_relaxed);
+        outputPeakRight.store (buffer.getMagnitude (1, 0, numSamples), std::memory_order_relaxed);
+    }
 }
 
 void WaveForgeProcessor::getStateInformation (juce::MemoryBlock& destData)
