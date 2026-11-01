@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.22)
 
-project(WaveForge VERSION 0.4.0)
+project(WaveForge VERSION 0.5.0)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -31,7 +31,8 @@ target_sources(WaveForge PRIVATE
     Source/PluginProcessor.cpp
     Source/PluginProcessor.h
     Source/Voice.h
-    Source/Wavetable.h)
+    Source/Wavetable.h
+    Source/Effects.h)
 
 target_compile_definitions(WaveForge PUBLIC
     JUCE_WEB_BROWSER=0
