@@ -264,10 +264,105 @@ static bool testOversampledDistortion()
     return true;
 }
 
+
+static bool testAdvancedFilter()
+{
+    constexpr double sampleRate = 48000.0;
+    constexpr int blockSize = 512;
+    WavetableBank bank;
+
+    // Measure actual voice rendering, not a mocked filter approximation.
+    // Settled RMS over several blocks excludes ADSR start transients.
+    auto rmsFor = [&bank] (int midiNote, int filterType, int slope,
+                           float keyTrack, float driveDb, float cutoff)
+    {
+        juce::Synthesiser synth;
+        synth.addVoice (new SynthVoice (bank));
+        synth.addSound (new SynthSound());
+        synth.setCurrentPlaybackSampleRate (sampleRate);
+
+        auto* voice = dynamic_cast<SynthVoice*> (synth.getVoice (0));
+        voice->prepare (sampleRate, blockSize);
+
+        VoiceParams p;
+        p.wtPosition = 0.0f; // sine: a clean one-frequency probe
+        p.unisonVoices = 1;
+        p.cutoff = cutoff;
+        p.resonance = 0.0f;
+        p.filterType = filterType;
+        p.filterSlope = slope;
+        p.filterKeyTrack = keyTrack;
+        p.filterDriveDb = driveDb;
+        p.filterEnvAmount = 0.0f;
+        p.ampEnv.attack = 0.001f;
+        p.ampEnv.decay = 0.03f;
+        p.ampEnv.sustain = 1.0f;
+        p.ampEnv.release = 0.1f;
+        p.filterEnv.attack = 0.001f;
+        p.filterEnv.decay = 0.03f;
+        p.filterEnv.sustain = 1.0f;
+        p.filterEnv.release = 0.1f;
+        voice->setParameters (p);
+
+        juce::AudioBuffer<float> block (2, blockSize);
+        double energy = 0.0;
+        int measured = 0;
+        for (int b = 0; b < 42; ++b)
+        {
+            block.clear();
+            juce::MidiBuffer midi;
+            if (b == 0)
+                midi.addEvent (juce::MidiMessage::noteOn (1, midiNote, (juce::uint8) 120), 0);
+
+            synth.renderNextBlock (block, midi, 0, blockSize);
+            for (int i = 0; i < blockSize; ++i)
+            {
+                const float left = block.getSample (0, i);
+                const float right = block.getSample (1, i);
+                if (! std::isfinite (left) || ! std::isfinite (right)
+                    || std::abs (left) > 20.0f || std::abs (right) > 20.0f)
+                    return -1.0;
+
+                if (b >= 32)
+                {
+                    energy += (double) left * left;
+                    ++measured;
+                }
+            }
+        }
+        return std::sqrt (energy / (double) measured);
+    };
+
+    // 2,093 Hz sine, cutoff well below it: an LP24 must attenuate more
+    // than LP12, while 100% keytrack should open the filter for high notes.
+    const double lp12 = rmsFor (96, 0, 0, 0.0f, 0.0f, 350.0f);
+    const double lp24 = rmsFor (96, 0, 1, 0.0f, 0.0f, 350.0f);
+    const double keytracked = rmsFor (96, 0, 0, 1.0f, 0.0f, 350.0f);
+    const double driven = rmsFor (96, 0, 1, 0.8f, 18.0f, 1200.0f);
+    const double bp24 = rmsFor (96, 1, 1, 0.0f, 8.0f, 2000.0f);
+    const double hp24 = rmsFor (60, 2, 1, 0.0f, 8.0f, 1500.0f);
+    std::cout << "Filter RMS LP12=" << lp12
+              << " LP24=" << lp24
+              << " keytracked=" << keytracked
+              << " driven=" << driven
+              << " BP24=" << bp24
+              << " HP24=" << hp24 << "\n";
+
+    if (! (lp12 > 1.0e-5 && lp24 >= 0.0 && lp24 < lp12 * 0.65
+           && keytracked > lp12 * 3.0
+           && driven >= 0.0 && bp24 >= 0.0 && hp24 >= 0.0))
+    {
+        std::cerr << "Advanced filter response, key tracking or drive test failed\n";
+        return false;
+    }
+
+    return true;
+}
+
 int main()
 {
     if (! testWavetableContinuity() || ! testVoiceRendering()
-        || ! testOversampledDistortion())
+        || ! testOversampledDistortion() || ! testAdvancedFilter())
         return 1;
     std::cout << "WaveForge sound smoke tests passed.\n";
     return 0;
