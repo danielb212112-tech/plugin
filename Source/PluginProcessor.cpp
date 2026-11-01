@@ -8,6 +8,23 @@ WaveForgeProcessor::WaveForgeProcessor()
         synth.addVoice (new SynthVoice (bank));
 
     synth.addSound (new SynthSound());
+
+    for (int i = 0; i < 2; ++i)
+    {
+        const juce::String pre = "lfo" + juce::String (i + 1);
+        lfoPtrs[(size_t) i] = { apvts.getRawParameterValue (pre + "Shape"),
+                                apvts.getRawParameterValue (pre + "Rate"),
+                                apvts.getRawParameterValue (pre + "Fade"),
+                                apvts.getRawParameterValue (pre + "Sync") };
+    }
+
+    for (int i = 0; i < 4; ++i)
+    {
+        const juce::String pre = "mod" + juce::String (i + 1);
+        modPtrs[(size_t) i] = { apvts.getRawParameterValue (pre + "Src"),
+                                apvts.getRawParameterValue (pre + "Dst"),
+                                apvts.getRawParameterValue (pre + "Amt") };
+    }
 }
 
 juce::AudioProcessorValueTreeState::ParameterLayout WaveForgeProcessor::createLayout()
@@ -83,6 +100,38 @@ juce::AudioProcessorValueTreeState::ParameterLayout WaveForgeProcessor::createLa
     layout.add (std::make_unique<AudioParameterFloat> (ParameterID { "fRelease", 1 }, "Filter Release",
                                                        NormalisableRange<float> (0.001f, 8.0f, 0.001f, 0.35f), 0.4f));
 
+    // ---------------- LFO 1 / LFO 2 ----------------
+    const StringArray lfoShapes { "Sine", "Triangle", "Saw Up", "Saw Down", "Square", "Sample & Hold" };
+
+    for (int i = 1; i <= 2; ++i)
+    {
+        const String pre  = "lfo" + String (i);
+        const String name = "LFO " + String (i);
+
+        layout.add (std::make_unique<AudioParameterChoice> (ParameterID { pre + "Shape", 1 }, name + " Shape", lfoShapes, 0));
+        layout.add (std::make_unique<AudioParameterFloat> (ParameterID { pre + "Rate", 1 }, name + " Rate (Hz)",
+                                                           NormalisableRange<float> (0.01f, 30.0f, 0.01f, 0.3f), 2.0f));
+        layout.add (std::make_unique<AudioParameterFloat> (ParameterID { pre + "Fade", 1 }, name + " Fade-in (s)",
+                                                           NormalisableRange<float> (0.0f, 5.0f, 0.01f, 0.5f), 0.0f));
+        layout.add (std::make_unique<AudioParameterBool> (ParameterID { pre + "Sync", 1 }, name + " Key Sync", true));
+    }
+
+    // ---------------- מטריצת מודולציה (4 משבצות) ----------------
+    // הסדר ברשימות חייב להתאים ל-ModSource / ModDest ב-Voice.h
+    const StringArray srcNames { "None", "LFO 1", "LFO 2", "Velocity", "Filter Env" };
+    const StringArray dstNames { "None", "WT Position", "Filter Cutoff", "Filter Resonance", "Pitch", "Volume" };
+
+    for (int i = 1; i <= 4; ++i)
+    {
+        const String pre  = "mod" + String (i);
+        const String name = "Mod " + String (i);
+
+        layout.add (std::make_unique<AudioParameterChoice> (ParameterID { pre + "Src", 1 }, name + " Source", srcNames, 0));
+        layout.add (std::make_unique<AudioParameterChoice> (ParameterID { pre + "Dst", 1 }, name + " Destination", dstNames, 0));
+        layout.add (std::make_unique<AudioParameterFloat> (ParameterID { pre + "Amt", 1 }, name + " Amount",
+                                                           NormalisableRange<float> (-1.0f, 1.0f, 0.001f), 0.0f));
+    }
+
     // ---------------- Output ----------------
     layout.add (std::make_unique<AudioParameterFloat> (
         ParameterID { "gain", 1 }, "Gain",
@@ -132,6 +181,21 @@ void WaveForgeProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::M
     p.filterEnv.decay   = get ("fDecay");
     p.filterEnv.sustain = get ("fSustain");
     p.filterEnv.release = get ("fRelease");
+
+    for (size_t i = 0; i < 2; ++i)
+    {
+        p.lfo[i].shape   = (int) lfoPtrs[i].shape->load();
+        p.lfo[i].rate    = lfoPtrs[i].rate->load();
+        p.lfo[i].fadeIn  = lfoPtrs[i].fade->load();
+        p.lfo[i].keySync = lfoPtrs[i].sync->load() > 0.5f;
+    }
+
+    for (size_t i = 0; i < 4; ++i)
+    {
+        p.mod[i].source = (int) modPtrs[i].src->load();
+        p.mod[i].dest   = (int) modPtrs[i].dst->load();
+        p.mod[i].amount = modPtrs[i].amt->load();
+    }
 
     for (int i = 0; i < synth.getNumVoices(); ++i)
         if (auto* v = dynamic_cast<SynthVoice*> (synth.getVoice (i)))
