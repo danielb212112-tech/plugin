@@ -90,6 +90,18 @@ public:
         juce::dsp::ProcessSpec spec { sampleRate, (juce::uint32) juce::jmax (1, maxBlockSize), 2 };
         filter.prepare (spec);
         filter.reset();
+
+        // Sample-accurate smoothing of pitch, wavetable motion, output and
+        // filter controls prevents zippering during automation and fast LFOs.
+        wtPositionSmooth.reset (sampleRate, 0.004);
+        osc2PositionSmooth.reset (sampleRate, 0.004);
+        pitchRatioSmooth.reset (sampleRate, 0.003);
+        cutoffSmooth.reset (sampleRate, 0.006);
+        resonanceSmooth.reset (sampleRate, 0.006);
+        volumeSmooth.reset (sampleRate, 0.004);
+        osc2GainSmooth.reset (sampleRate, 0.004);
+        subGainSmooth.reset (sampleRate, 0.004);
+        noiseGainSmooth.reset (sampleRate, 0.004);
     }
 
     void setParameters (const VoiceParams& p)
@@ -127,7 +139,21 @@ public:
 
         noteTime         = 0.0;
         lastFilterEnv    = 0.0f;
-        controlCountdown = 0;       // מכריח עדכון מודולציה בדגימה הראשונה
+        controlCountdown = 0;       // Force a zero-elapsed update on the first sample.
+        modulationStarted = false;
+
+        // Each new voice starts from the note's actual parameter values, not
+        // from an unrelated previous note's smoothing history.
+        wtPositionSmooth.setCurrentAndTargetValue (juce::jlimit (0.0f, 1.0f, params.wtPosition));
+        osc2PositionSmooth.setCurrentAndTargetValue (juce::jlimit (0.0f, 1.0f, params.osc2WtPosition));
+        pitchRatioSmooth.setCurrentAndTargetValue (1.0f);
+        cutoffSmooth.setCurrentAndTargetValue (juce::jlimit (20.0f,
+            (float) (getSampleRate() * 0.45), params.cutoff));
+        resonanceSmooth.setCurrentAndTargetValue (juce::jlimit (0.0f, 1.0f, params.resonance));
+        volumeSmooth.setCurrentAndTargetValue (1.0f);
+        osc2GainSmooth.setCurrentAndTargetValue (0.0f);
+        subGainSmooth.setCurrentAndTargetValue (0.0f);
+        noiseGainSmooth.setCurrentAndTargetValue (0.0f);
 
         filter.reset();
         ampAdsr.noteOn();
@@ -158,24 +184,29 @@ public:
             return;
 
         const double sr = getSampleRate();
+        if (sr <= 0.0)
+            return;
 
-        // ---- הכנת Unison לבלוק (דטיון, פאן) ----
+        const double invSr = 1.0 / sr;
+        const float nyquist = (float) (sr * 0.5);
+
+        // Preserve equal-power spread for stereo Unison.
         nUni = juce::jlimit (1, maxUnison, params.unisonVoices);
         const float norm = 1.0f / std::sqrt ((float) nUni);
 
         for (int u = 0; u < nUni; ++u)
         {
-            const auto  su    = (size_t) u;
-            const float x     = (nUni == 1) ? 0.0f : (2.0f * (float) u / (float) (nUni - 1) - 1.0f);
-            const float angle = (x * params.unisonSpread + 1.0f) * juce::MathConstants<float>::pi * 0.25f;
-
+            const auto su = (size_t) u;
+            const float x = nUni == 1 ? 0.0f
+                                       : (2.0f * (float) u / (float) (nUni - 1) - 1.0f);
+            const float angle = (x * params.unisonSpread + 1.0f)
+                                  * juce::MathConstants<float>::pi * 0.25f;
             baseFreq[su] = frequency * std::pow (2.0, (double) (x * params.unisonDetune) / 1200.0);
-            gL[su]       = std::cos (angle) * juce::MathConstants<float>::sqrt2 * norm;
-            gR[su]       = std::sin (angle) * juce::MathConstants<float>::sqrt2 * norm;
+            gL[su] = std::cos (angle) * juce::MathConstants<float>::sqrt2 * norm;
+            gR[su] = std::sin (angle) * juce::MathConstants<float>::sqrt2 * norm;
         }
 
-        // עדכון מודולציה בתחילת הבלוק (בלי להתקדם בזמן)
-        updateModulation (lastFilterEnv, 0);
+        const double osc2Transpose = std::pow (2.0, (double) params.osc2Semitones / 12.0);
 
         for (int i = 0; i < numSamples; ++i)
         {
@@ -184,61 +215,96 @@ public:
 
             if (--controlCountdown <= 0)
             {
-                updateModulation (fEnv, controlRate);
+                // Zero elapsed for the very first sample: the previous code
+                // advanced LFOs 16 samples early on note-on.
+                updateModulation (fEnv, modulationStarted ? controlRate : 0);
+                modulationStarted = true;
                 controlCountdown = controlRate;
             }
+
+            const float pitchRatio = pitchRatioSmooth.getNextValue();
+            const float wtPos = wtPositionSmooth.getNextValue()
+                               * (float) (WavetableBank::numFrames - 1);
+            const int frame = juce::jlimit (0, WavetableBank::numFrames - 2, (int) wtPos);
+            const float frameBlend = juce::jlimit (0.0f, 1.0f, wtPos - (float) frame);
+
+            const float wt2Pos = osc2PositionSmooth.getNextValue()
+                                * (float) (WavetableBank::numFrames - 1);
+            const int frame2 = juce::jlimit (0, WavetableBank::numFrames - 2, (int) wt2Pos);
+            const float frame2Blend = juce::jlimit (0.0f, 1.0f, wt2Pos - (float) frame2);
+
+            const float osc2Gain = osc2GainSmooth.getNextValue();
+            const float subGain = subGainSmooth.getNextValue();
+            const float noiseGain = noiseGainSmooth.getNextValue();
+            const float voiceGain = volumeSmooth.getNextValue();
+
+            filter.setCutoffFrequency (cutoffSmooth.getNextValue());
+            filter.setResonance (0.707f + resonanceSmooth.getNextValue() * 7.0f);
 
             float oscL = 0.0f, oscR = 0.0f;
 
             for (int u = 0; u < nUni; ++u)
             {
-                const auto  su = (size_t) u;
+                const auto su = (size_t) u;
+                const double f = baseFreq[su] * (double) pitchRatio;
+                const float fade = juce::jlimit (0.0f, 1.0f,
+                    (nyquist - (float) f) / (nyquist * 0.10f));
+
                 const float ph = (float) phases[su];
-
-                float s = bank.read (frameA, lvl[su], ph);
-                if (frameMix > 0.0f)
-                    s += frameMix * (bank.read (frameA + 1, lvl[su], ph) - s);
-
-                oscL += s * gL[su];
-                oscR += s * gR[su];
-
-                if (params.osc2Enabled && params.osc2Level > 0.0001f)
+                if (fade > 0.0f)
                 {
-                    const float ph2 = (float) phases2[su];
-                    float s2 = bank.read (frame2A, lvl2[su], ph2);
-                    if (frame2Mix > 0.0f)
-                        s2 += frame2Mix * (bank.read (frame2A + 1, lvl2[su], ph2) - s2);
-                    oscL += s2 * gL[su] * params.osc2Level;
-                    oscR += s2 * gR[su] * params.osc2Level;
-                    phases2[su] += inc2[su];
-                    if (phases2[su] >= 1.0)
-                        phases2[su] -= 1.0;
+                    // Mip selection is bandwidth-safe for the *instantaneous*
+                    // fundamental, including every detuned Unison voice.
+                    const auto mip = WavetableBank::selectMip (f, sr);
+                    const float value = bank.readMorph (frame, frameBlend, mip, ph) * fade;
+                    oscL += value * gL[su];
+                    oscR += value * gR[su];
                 }
 
-                phases[su] += inc[su];
+                phases[su] += f * invSr;
                 if (phases[su] >= 1.0)
-                    phases[su] -= 1.0;
+                    phases[su] -= std::floor (phases[su]);
+
+                const double f2 = f * osc2Transpose;
+                const float fade2 = juce::jlimit (0.0f, 1.0f,
+                    (nyquist - (float) f2) / (nyquist * 0.10f));
+                if (osc2Gain > 0.00001f && fade2 > 0.0f)
+                {
+                    const auto mip2 = WavetableBank::selectMip (f2, sr);
+                    const float value2 = bank.readMorph (frame2, frame2Blend, mip2,
+                                                          (float) phases2[su])
+                                         * osc2Gain * fade2;
+                    oscL += value2 * gL[su];
+                    oscR += value2 * gR[su];
+                }
+                // Free-run OSC2 even while muted to avoid resetting its phase
+                // when the oscillator is enabled mid-note.
+                phases2[su] += f2 * invSr;
+                if (phases2[su] >= 1.0)
+                    phases2[su] -= std::floor (phases2[su]);
             }
 
-            // Sub is a clean sine one octave below the played note; noise is per-voice white noise.
+            // Pitch modulation also tracks the sub, keeping octaves in tune.
             const float sub = std::sin (juce::MathConstants<float>::twoPi * (float) subPhase)
-                              * params.subLevel;
-            subPhase += (frequency * 0.5) / sr;
-            if (subPhase >= 1.0) subPhase -= 1.0;
-            const float noise = (random.nextFloat() * 2.0f - 1.0f) * params.noiseLevel;
-            oscL += sub + noise;
-            oscR += sub + noise;
+                              * subGain;
+            subPhase += frequency * 0.5 * (double) pitchRatio * invSr;
+            if (subPhase >= 1.0)
+                subPhase -= std::floor (subPhase);
 
-            const float g    = ampAdsr.getNextSample() * level * 0.25f * volumeGain;
-            const float outL = filter.processSample (0, oscL) * g;
-            const float outR = filter.processSample (1, oscR) * g;
+            // Independent left/right noise avoids a collapsed stereo image.
+            oscL += sub + (random.nextFloat() * 2.0f - 1.0f) * noiseGain;
+            oscR += sub + (random.nextFloat() * 2.0f - 1.0f) * noiseGain;
+
+            const float amp = ampAdsr.getNextSample() * level * 0.25f * voiceGain;
+            const float outL = filter.processSample (0, oscL) * amp;
+            const float outR = filter.processSample (1, oscR) * amp;
 
             if (output.getNumChannels() >= 2)
             {
                 output.addSample (0, startSample + i, outL);
                 output.addSample (1, startSample + i, outR);
             }
-            else
+            else if (output.getNumChannels() > 0)
             {
                 output.addSample (0, startSample + i, 0.5f * (outL + outR));
             }
@@ -249,8 +315,6 @@ public:
                 break;
             }
         }
-
-        (void) sr;
     }
 
 private:
@@ -287,94 +351,76 @@ private:
         }
     }
 
-    // מתקדם ב-elapsed דגימות (0 = רק חישוב מחדש) ומחשב את כל היעדים
+    // Updates modulation targets at the control rate. SmoothedValue then
+    // interpolates those targets on EVERY sample in renderNextBlock().
     void updateModulation (float filterEnvValue, int elapsed)
     {
-        const double sr    = getSampleRate();
+        const double sr = getSampleRate();
         const double dtSec = (double) elapsed / sr;
         noteTime += dtSec;
 
-        // ---- LFO-ים ----
         for (size_t l = 0; l < 2; ++l)
         {
-            auto& st       = lfoState[l];
+            auto& st = lfoState[l];
             const auto& lp = params.lfo[l];
 
             st.phase += (double) lp.rate * dtSec;
             if (st.phase >= 1.0)
             {
                 st.phase -= std::floor (st.phase);
-                st.held   = random.nextFloat() * 2.0f - 1.0f;
+                st.held = random.nextFloat() * 2.0f - 1.0f;
             }
 
-            const float fade = lp.fadeIn > 0.001f ? juce::jmin (1.0f, (float) (noteTime / (double) lp.fadeIn))
-                                                  : 1.0f;
+            const float fade = lp.fadeIn > 0.001f
+                ? juce::jmin (1.0f, (float) (noteTime / (double) lp.fadeIn))
+                : 1.0f;
             st.value = lfoShape (lp.shape, (float) st.phase, st.held) * fade;
         }
 
-        // ---- סכימת המודולציות לפי היעדים ----
-        float wtMod = 0.0f, cutOct = 0.0f, resMod = 0.0f, pitchSemis = 0.0f, volAdd = 0.0f;
-
+        float wtMod = 0.0f, cutOct = 0.0f, resMod = 0.0f;
+        float pitchSemis = 0.0f, volAdd = 0.0f;
         for (const auto& slot : params.mod)
         {
-            if (slot.source == ModSource::None || slot.dest == ModDest::None || slot.amount == 0.0f)
+            if (slot.source == ModSource::None || slot.dest == ModDest::None
+                || slot.amount == 0.0f)
                 continue;
 
             const float v = slot.amount * sourceValue (slot.source, filterEnvValue);
-
             switch (slot.dest)
             {
-                case ModDest::WtPosition:  wtMod      += v;          break;
-                case ModDest::Cutoff:      cutOct     += v * 4.0f;   break;   // ±4 אוקטבות
-                case ModDest::Resonance:   resMod     += v;          break;
-                case ModDest::Pitch:       pitchSemis += v * 12.0f;  break;   // ±12 חצאי טון
-                case ModDest::Volume:      volAdd     += v;          break;
+                case ModDest::WtPosition: wtMod += v; break;
+                case ModDest::Cutoff:     cutOct += v * 4.0f; break;
+                case ModDest::Resonance:  resMod += v; break;
+                case ModDest::Pitch:      pitchSemis += v * 12.0f; break;
+                case ModDest::Volume:     volAdd += v; break;
                 default: break;
             }
         }
 
-        // ---- Wavetable ----
-        const float pos  = juce::jlimit (0.0f, 1.0f, params.wtPosition + wtMod);
-        const float posF = pos * (float) (WavetableBank::numFrames - 1);
-        frameA   = juce::jlimit (0, WavetableBank::numFrames - 2, (int) posF);
-        frameMix = juce::jlimit (0.0f, 1.0f, posF - (float) frameA);
+        wtPositionSmooth.setTargetValue (
+            juce::jlimit (0.0f, 1.0f, params.wtPosition + wtMod));
+        osc2PositionSmooth.setTargetValue (
+            juce::jlimit (0.0f, 1.0f, params.osc2WtPosition));
 
-        // ---- פיץ' (משפיע על קצב הפאזה ועל רמת ה-Mip) ----
-        const double pitchMul = std::pow (2.0, (double) pitchSemis / 12.0);
-        const double sr2      = sr;
-        for (int u = 0; u < nUni; ++u)
-        {
-            const auto su = (size_t) u;
-            const double f = baseFreq[su] * pitchMul;
-            inc[su] = f / sr2;
-            lvl[su] = WavetableBank::levelForFrequency (f, sr2);
-        }
+        // Multiple matrix routes can add up, so cap modulation to an
+        // intentionally musical range before converting to a pitch ratio.
+        const float pitch = juce::jlimit (-48.0f, 48.0f, pitchSemis);
+        pitchRatioSmooth.setTargetValue (std::pow (2.0f, pitch / 12.0f));
 
-        // ---- Oscillator 2 wavetable and pitch ----
-        const float pos2 = juce::jlimit (0.0f, 1.0f, params.osc2WtPosition);
-        const float pos2F = pos2 * (float) (WavetableBank::numFrames - 1);
-        frame2A = juce::jlimit (0, WavetableBank::numFrames - 2, (int) pos2F);
-        frame2Mix = juce::jlimit (0.0f, 1.0f, pos2F - (float) frame2A);
-        const double osc2PitchMul = std::pow (2.0, (double) params.osc2Semitones / 12.0);
-        for (int u = 0; u < nUni; ++u)
-        {
-            const auto su = (size_t) u;
-            const double f2 = baseFreq[su] * pitchMul * osc2PitchMul;
-            inc2[su] = f2 / sr;
-            lvl2[su] = WavetableBank::levelForFrequency (f2, sr);
-        }
-
-        // ---- פילטר ----
         const float maxFreq = (float) (sr * 0.45);
-        const float cutoff  = juce::jlimit (20.0f, maxFreq,
-                                params.cutoff * std::pow (2.0f, params.filterEnvAmount * filterEnvValue + cutOct));
-        filter.setCutoffFrequency (cutoff);
+        const float cutoff = juce::jlimit (20.0f, maxFreq,
+            params.cutoff * std::pow (2.0f,
+                juce::jlimit (-16.0f, 16.0f,
+                    params.filterEnvAmount * filterEnvValue + cutOct)));
+        cutoffSmooth.setTargetValue (cutoff);
+        resonanceSmooth.setTargetValue (
+            juce::jlimit (0.0f, 1.0f, params.resonance + resMod));
+        volumeSmooth.setTargetValue (juce::jlimit (0.0f, 2.0f, 1.0f + volAdd));
 
-        const float res = juce::jlimit (0.0f, 1.0f, params.resonance + resMod);
-        filter.setResonance (0.707f + res * 10.0f);
-
-        // ---- ווליום ----
-        volumeGain = juce::jlimit (0.0f, 2.0f, 1.0f + volAdd);
+        osc2GainSmooth.setTargetValue (params.osc2Enabled
+            ? juce::jlimit (0.0f, 1.0f, params.osc2Level) : 0.0f);
+        subGainSmooth.setTargetValue (juce::jlimit (0.0f, 1.0f, params.subLevel));
+        noiseGainSmooth.setTargetValue (juce::jlimit (0.0f, 1.0f, params.noiseLevel));
     }
 
     const WavetableBank& bank;
@@ -383,29 +429,24 @@ private:
     juce::ADSR ampAdsr, filterAdsr;
     juce::dsp::StateVariableTPTFilter<float> filter;
 
-    std::array<double, maxUnison> phases   {};
-    std::array<double, maxUnison> phases2  {};
-    std::array<double, maxUnison> inc2     {};
-    std::array<int,    maxUnison> lvl2     {};
+    std::array<double, maxUnison> phases {}, phases2 {}, baseFreq {};
+    std::array<float, maxUnison> gL {}, gR {};
     double subPhase = 0.0;
-    std::array<double, maxUnison> baseFreq {};
-    std::array<double, maxUnison> inc      {};
-    std::array<float,  maxUnison> gL {}, gR {};
-    std::array<int,    maxUnison> lvl {};
     int nUni = 1;
+
+    juce::SmoothedValue<float> wtPositionSmooth, osc2PositionSmooth;
+    juce::SmoothedValue<float, juce::ValueSmoothingTypes::Multiplicative> pitchRatioSmooth;
+    juce::SmoothedValue<float, juce::ValueSmoothingTypes::Multiplicative> cutoffSmooth;
+    juce::SmoothedValue<float> resonanceSmooth, volumeSmooth;
+    juce::SmoothedValue<float> osc2GainSmooth, subGainSmooth, noiseGainSmooth;
 
     std::array<LfoState, 2> lfoState {};
     juce::Random random;
 
-    int   frameA = 2;
-    float frameMix = 0.0f;
-    int frame2A = 2;
-    float frame2Mix = 0.0f;
-    float volumeGain = 1.0f;
-
-    double noteTime         = 0.0;
-    float  lastFilterEnv    = 0.0f;
-    int    controlCountdown = 0;
+    double noteTime = 0.0;
+    float lastFilterEnv = 0.0f;
+    int controlCountdown = 0;
+    bool modulationStarted = false;
 
     double frequency = 440.0;
     float  level     = 0.0f;
