@@ -1,24 +1,30 @@
 #pragma once
 
 #include <JuceHeader.h>
+#include <array>
+#include "Wavetable.h"
 
 // ---------------------------------------------------------------------------
 // פרמטרים שה-Processor שולח לכל קול בתחילת כל בלוק
 // ---------------------------------------------------------------------------
 struct VoiceParams
 {
-    int waveform = 1;                  // 0 Sine, 1 Saw, 2 Square, 3 Triangle
+    // Oscillator
+    float wtPosition    = 0.286f;   // 0..1 לאורך הפריימים של ה-Wavetable
+    int   unisonVoices  = 1;        // 1..8
+    float unisonDetune  = 20.0f;    // סנטים (הקצה החיצוני)
+    float unisonSpread  = 0.7f;     // 0..1 פיזור סטריאו
+
     juce::ADSR::Parameters ampEnv;
 
-    int   filterType      = 0;         // 0 Low-pass, 1 Band-pass, 2 High-pass
-    float cutoff          = 3000.0f;   // Hz
-    float resonance       = 0.2f;      // 0..1
-    float filterEnvAmount = 0.0f;      // באוקטבות, -6..+6
+    // Filter
+    int   filterType      = 0;      // 0 Low-pass, 1 Band-pass, 2 High-pass
+    float cutoff          = 3000.0f;
+    float resonance       = 0.2f;   // 0..1
+    float filterEnvAmount = 0.0f;   // באוקטבות
     juce::ADSR::Parameters filterEnv;
 };
 
-// ---------------------------------------------------------------------------
-// Sound: מגדיר שכל הנוטות מנוגנות על ידי אותו "סאונד"
 // ---------------------------------------------------------------------------
 struct SynthSound : public juce::SynthesiserSound
 {
@@ -27,12 +33,14 @@ struct SynthSound : public juce::SynthesiserSound
 };
 
 // ---------------------------------------------------------------------------
-// Voice: אוסצילטור -> פילטר -> ווליום (ADSR)
+// Voice: Wavetable (עם Unison) -> פילטר סטריאו -> ווליום (ADSR)
 // ---------------------------------------------------------------------------
 class SynthVoice : public juce::SynthesiserVoice
 {
 public:
-    enum Waveform { Sine = 0, Saw, Square, Triangle };
+    static constexpr int maxUnison = 8;
+
+    explicit SynthVoice (const WavetableBank& b) : bank (b) {}
 
     bool canPlaySound (juce::SynthesiserSound* s) override
     {
@@ -45,12 +53,11 @@ public:
         ampAdsr.setSampleRate (sampleRate);
         filterAdsr.setSampleRate (sampleRate);
 
-        juce::dsp::ProcessSpec spec { sampleRate, (juce::uint32) juce::jmax (1, maxBlockSize), 1 };
+        juce::dsp::ProcessSpec spec { sampleRate, (juce::uint32) juce::jmax (1, maxBlockSize), 2 };
         filter.prepare (spec);
         filter.reset();
     }
 
-    // נקרא פעם בכל בלוק מה-Processor
     void setParameters (const VoiceParams& p)
     {
         params = p;
@@ -63,7 +70,6 @@ public:
                       : p.filterType == 2 ? FT::highpass
                                           : FT::lowpass);
 
-        // Resonance 0..1  ->  Q של 0.707 עד ~11
         filter.setResonance (0.707f + p.resonance * 10.0f);
     }
 
@@ -71,7 +77,11 @@ public:
     {
         frequency = juce::MidiMessage::getMidiNoteInHertz (midiNote);
         level     = velocity;
-        phase     = 0.0;
+
+        // פאזה אקראית לקולות ה-Unison (הראשון מתחיל מאפס) - נשמע רחב יותר
+        for (int u = 0; u < maxUnison; ++u)
+            phases[(size_t) u] = (u == 0) ? 0.0 : (double) random.nextFloat();
+
         filter.reset();
         ampAdsr.noteOn();
         filterAdsr.noteOn();
@@ -100,29 +110,75 @@ public:
         if (! isVoiceActive())
             return;
 
-        const auto sr       = getSampleRate();
-        const auto dt       = (float) (frequency / sr);
-        const float maxFreq = (float) (sr * 0.45);
+        const double sr      = getSampleRate();
+        const float maxFreq  = (float) (sr * 0.45);
+
+        // ---- הכנת Unison לבלוק ----
+        const int nUni = juce::jlimit (1, maxUnison, params.unisonVoices);
+
+        std::array<double, maxUnison> inc {};
+        std::array<float,  maxUnison> gL {}, gR {};
+        std::array<int,    maxUnison> lvl {};
+
+        const float norm = 1.0f / std::sqrt ((float) nUni);
+
+        for (int u = 0; u < nUni; ++u)
+        {
+            const float x     = (nUni == 1) ? 0.0f : (2.0f * (float) u / (float) (nUni - 1) - 1.0f);
+            const double fu   = frequency * std::pow (2.0, (double) (x * params.unisonDetune) / 1200.0);
+            const float angle = (x * params.unisonSpread + 1.0f) * juce::MathConstants<float>::pi * 0.25f;
+
+            inc[(size_t) u] = fu / sr;
+            lvl[(size_t) u] = WavetableBank::levelForFrequency (fu, sr);
+            gL[(size_t) u]  = std::cos (angle) * juce::MathConstants<float>::sqrt2 * norm;
+            gR[(size_t) u]  = std::sin (angle) * juce::MathConstants<float>::sqrt2 * norm;
+        }
+
+        // ---- מיקום ב-Wavetable: אינטרפולציה בין שני פריימים סמוכים ----
+        const float posF = juce::jlimit (0.0f, 1.0f, params.wtPosition) * (float) (WavetableBank::numFrames - 1);
+        const int   f0   = juce::jlimit (0, WavetableBank::numFrames - 2, (int) posF);
+        const float fr   = juce::jlimit (0.0f, 1.0f, posF - (float) f0);
 
         for (int i = 0; i < numSamples; ++i)
         {
+            float oscL = 0.0f, oscR = 0.0f;
+
+            for (int u = 0; u < nUni; ++u)
+            {
+                const auto  su = (size_t) u;
+                const float ph = (float) phases[su];
+
+                float s = bank.read (f0, lvl[su], ph);
+                if (fr > 0.0f)
+                    s += fr * (bank.read (f0 + 1, lvl[su], ph) - s);
+
+                oscL += s * gL[su];
+                oscR += s * gR[su];
+
+                phases[su] += inc[su];
+                if (phases[su] >= 1.0)
+                    phases[su] -= 1.0;
+            }
+
             // Cutoff = בסיס * 2^(כמות * מעטפת)
             const float fEnv   = filterAdsr.getNextSample();
             const float cutoff = juce::jlimit (20.0f, maxFreq,
                                     params.cutoff * std::pow (2.0f, params.filterEnvAmount * fEnv));
             filter.setCutoffFrequency (cutoff);
 
-            const float osc  = generate ((float) phase, dt);
-            const float filt = filter.processSample (0, osc);
-            const float env  = ampAdsr.getNextSample();
-            const float out  = filt * env * level * 0.25f;
+            const float g = ampAdsr.getNextSample() * level * 0.25f;
+            const float outL = filter.processSample (0, oscL) * g;
+            const float outR = filter.processSample (1, oscR) * g;
 
-            for (int ch = 0; ch < output.getNumChannels(); ++ch)
-                output.addSample (ch, startSample + i, out);
-
-            phase += (double) dt;
-            if (phase >= 1.0)
-                phase -= 1.0;
+            if (output.getNumChannels() >= 2)
+            {
+                output.addSample (0, startSample + i, outL);
+                output.addSample (1, startSample + i, outR);
+            }
+            else
+            {
+                output.addSample (0, startSample + i, 0.5f * (outL + outR));
+            }
 
             if (! ampAdsr.isActive())
             {
@@ -133,54 +189,15 @@ public:
     }
 
 private:
-    // PolyBLEP - מפחית aliasing בגלים חדים (Saw / Square)
-    static float polyBlep (float t, float dt)
-    {
-        if (t < dt)
-        {
-            t /= dt;
-            return t + t - t * t - 1.0f;
-        }
-        if (t > 1.0f - dt)
-        {
-            t = (t - 1.0f) / dt;
-            return t * t + t + t + 1.0f;
-        }
-        return 0.0f;
-    }
-
-    float generate (float t, float dt) const
-    {
-        switch (params.waveform)
-        {
-            case Sine:
-                return std::sin (juce::MathConstants<float>::twoPi * t);
-
-            case Saw:
-                return (2.0f * t - 1.0f) - polyBlep (t, dt);
-
-            case Square:
-            {
-                float v = t < 0.5f ? 1.0f : -1.0f;
-                v += polyBlep (t, dt);
-                v -= polyBlep (std::fmod (t + 0.5f, 1.0f), dt);
-                return v;
-            }
-
-            case Triangle:
-                return 4.0f * std::abs (t - 0.5f) - 1.0f;
-
-            default:
-                return 0.0f;
-        }
-    }
-
+    const WavetableBank& bank;
     VoiceParams params;
 
     juce::ADSR ampAdsr, filterAdsr;
     juce::dsp::StateVariableTPTFilter<float> filter;
 
+    std::array<double, maxUnison> phases {};
+    juce::Random random;
+
     double frequency = 440.0;
-    double phase     = 0.0;
     float  level     = 0.0f;
 };

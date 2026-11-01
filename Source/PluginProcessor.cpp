@@ -5,7 +5,7 @@ WaveForgeProcessor::WaveForgeProcessor()
       apvts (*this, nullptr, "STATE", createLayout())
 {
     for (int i = 0; i < numVoices; ++i)
-        synth.addVoice (new SynthVoice());
+        synth.addVoice (new SynthVoice (bank));
 
     synth.addSound (new SynthSound());
 }
@@ -17,10 +17,38 @@ juce::AudioProcessorValueTreeState::ParameterLayout WaveForgeProcessor::createLa
 
     const NormalisableRange<float> timeRange (0.001f, 5.0f, 0.001f, 0.35f);
 
-    // ---------------- Oscillator ----------------
-    layout.add (std::make_unique<AudioParameterChoice> (
-        ParameterID { "wave", 1 }, "Waveform",
-        StringArray { "Sine", "Saw", "Square", "Triangle" }, 1));
+    // ---------------- Oscillator (Wavetable) ----------------
+    // התצוגה מראה באיזה פריים אנחנו, או את המעבר בין שני פריימים
+    auto positionText = [] (float v, int)
+    {
+        const float pos = v * (float) (WavetableBank::numFrames - 1);
+        const int   i   = jmin ((int) pos, WavetableBank::numFrames - 1);
+        const float fr  = pos - (float) i;
+
+        if (i >= WavetableBank::numFrames - 1 || fr < 0.03f)
+            return WavetableBank::frameName (i);
+        if (fr > 0.97f)
+            return WavetableBank::frameName (i + 1);
+
+        return WavetableBank::frameName (i) + " > " + WavetableBank::frameName (i + 1)
+               + " " + String (roundToInt (fr * 100.0f)) + "%";
+    };
+
+    layout.add (std::make_unique<AudioParameterFloat> (
+        ParameterID { "wtPos", 1 }, "WT Position",
+        NormalisableRange<float> (0.0f, 1.0f, 0.001f), 2.0f / 7.0f,
+        AudioParameterFloatAttributes().withStringFromValueFunction (positionText)));
+
+    layout.add (std::make_unique<AudioParameterInt> (
+        ParameterID { "uniVoices", 1 }, "Unison Voices", 1, 8, 1));
+
+    layout.add (std::make_unique<AudioParameterFloat> (
+        ParameterID { "uniDetune", 1 }, "Unison Detune (cents)",
+        NormalisableRange<float> (0.0f, 100.0f, 0.1f, 0.6f), 20.0f));
+
+    layout.add (std::make_unique<AudioParameterFloat> (
+        ParameterID { "uniSpread", 1 }, "Unison Stereo Spread",
+        NormalisableRange<float> (0.0f, 1.0f, 0.001f), 0.7f));
 
     // ---------------- Amp envelope ----------------
     layout.add (std::make_unique<AudioParameterFloat> (ParameterID { "attack", 1 },  "Amp Attack",  timeRange, 0.01f));
@@ -85,7 +113,10 @@ void WaveForgeProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::M
     auto get = [this] (const char* id) { return apvts.getRawParameterValue (id)->load(); };
 
     VoiceParams p;
-    p.waveform = (int) get ("wave");
+    p.wtPosition   = get ("wtPos");
+    p.unisonVoices = (int) get ("uniVoices");
+    p.unisonDetune = get ("uniDetune");
+    p.unisonSpread = get ("uniSpread");
 
     p.ampEnv.attack  = get ("attack");
     p.ampEnv.decay   = get ("decay");
