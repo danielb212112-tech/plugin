@@ -41,6 +41,30 @@ private:
     std::atomic<float>* spread = nullptr;
 };
 
+class WaveForgeEnvelopeEditor final : public juce::Component
+{
+public:
+    WaveForgeEnvelopeEditor (WaveForgeProcessor&, const juce::String& prefix, const juce::String& title);
+    ~WaveForgeEnvelopeEditor() override;
+    void paint (juce::Graphics&) override;
+    void mouseDown (const juce::MouseEvent&) override;
+    void mouseDrag (const juce::MouseEvent&) override;
+    void mouseUp (const juce::MouseEvent&) override;
+
+private:
+    enum class Handle { none, attack, decay, sustain, release };
+    juce::Point<float> getHandlePosition (Handle) const;
+    void updateParameter (juce::RangedAudioParameter*, float);
+    WaveForgeProcessor& processor;
+    juce::String title;
+    juce::RangedAudioParameter* attack = nullptr;
+    juce::RangedAudioParameter* decay = nullptr;
+    juce::RangedAudioParameter* sustain = nullptr;
+    juce::RangedAudioParameter* release = nullptr;
+    Handle activeHandle = Handle::none;
+    juce::RangedAudioParameter* activeParameter = nullptr;
+};
+
 class WaveForgePageContent final : public juce::Component
 {
 public:
@@ -57,7 +81,8 @@ public:
 
     WaveForgeParameterPage (WaveForgeProcessor&,
                             std::initializer_list<std::pair<const char*, const char*>>,
-                            bool showWaveform = false);
+                            bool showWaveform = false,
+                            const juce::String& envelopePrefix = {});
     void paint (juce::Graphics&) override;
     void resized() override;
 
@@ -69,6 +94,7 @@ private:
     std::unique_ptr<WaveForgeWaveDisplay> waveform;
     std::unique_ptr<WaveForgeWaveDisplay> waveform2;
     std::unique_ptr<WaveForgeUnisonDisplay> unisonDisplay;
+    std::unique_ptr<WaveForgeEnvelopeEditor> envelopeEditor;
     std::vector<std::unique_ptr<juce::Component>> controls;
     std::vector<std::unique_ptr<juce::Label>> labels;
     std::vector<std::unique_ptr<SliderAttachment>> sliderAttachments;
