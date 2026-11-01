@@ -32,7 +32,7 @@ WaveForgeParameterPage::WaveForgeParameterPage (
         {
             auto combo = std::make_unique<juce::ComboBox>();
             if (auto* choice = dynamic_cast<juce::AudioParameterChoice*> (parameter))
-                combo->addItemList (choice->choices, 1);
+                combo->addItemList (parameter->getAllValueStrings(), 1);
             addAndMakeVisible (*combo);
             comboAttachments.push_back (std::make_unique<ComboAttachment> (audioProcessor.apvts, id, *combo));
             controls.push_back (std::move (combo));
