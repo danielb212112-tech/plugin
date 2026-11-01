@@ -1,10 +1,228 @@
 #include "PluginEditor.h"
 
+namespace
+{
+    const juce::Colour bg        (0xff090e17);
+    const juce::Colour panel     (0xff121b29);
+    const juce::Colour panelHi   (0xff182538);
+    const juce::Colour accent    (0xff31dfc2);
+    const juce::Colour textMain  (0xffedf4ff);
+    const juce::Colour textMuted (0xff8395ad);
+}
+
+WaveForgeLookAndFeel::WaveForgeLookAndFeel()
+{
+    setColour (juce::ResizableWindow::backgroundColourId, bg);
+    setColour (juce::TabbedComponent::backgroundColourId, bg);
+    setColour (juce::TabbedButtonBar::tabTextColourId, textMuted);
+    setColour (juce::TabbedButtonBar::frontTextColourId, textMain);
+    setColour (juce::ComboBox::textColourId, textMain);
+    setColour (juce::ComboBox::backgroundColourId, panelHi);
+    setColour (juce::ComboBox::outlineColourId, juce::Colour (0xff2a3b50));
+    setColour (juce::PopupMenu::backgroundColourId, panel);
+    setColour (juce::PopupMenu::textColourId, textMain);
+    setColour (juce::PopupMenu::highlightedBackgroundColourId, accent.withAlpha (0.22f));
+    setColour (juce::PopupMenu::highlightedTextColourId, textMain);
+}
+
+void WaveForgeLookAndFeel::drawRotarySlider (juce::Graphics& g, int x, int y, int width, int height,
+                                              float sliderPos, float startAngle, float endAngle,
+                                              juce::Slider& slider)
+{
+    const float side = (float) juce::jmin (width, height);
+    const float radius = side * 0.37f;
+    const float cx = (float) x + (float) width * 0.5f;
+    const float cy = (float) y + (float) height * 0.46f;
+    const float angle = startAngle + sliderPos * (endAngle - startAngle);
+
+    g.setColour (juce::Colour (0xff0a111d));
+    g.fillEllipse (cx - radius - 5.0f, cy - radius - 5.0f,
+                   (radius + 5.0f) * 2.0f, (radius + 5.0f) * 2.0f);
+
+    juce::Path track;
+    track.addCentredArc (cx, cy, radius, radius, 0.0f, startAngle, endAngle, true);
+    g.setColour (juce::Colour (0xff2a3b50));
+    g.strokePath (track, juce::PathStrokeType (5.0f, juce::PathStrokeType::curved,
+                                               juce::PathStrokeType::rounded));
+
+    juce::Path value;
+    value.addCentredArc (cx, cy, radius, radius, 0.0f, startAngle,
+                         juce::jmax (startAngle + 0.001f, angle), true);
+    g.setColour (accent);
+    g.strokePath (value, juce::PathStrokeType (5.0f, juce::PathStrokeType::curved,
+                                               juce::PathStrokeType::rounded));
+
+    g.setColour (juce::Colour (0xff1b293b));
+    g.fillEllipse (cx - radius + 5.0f, cy - radius + 5.0f,
+                   (radius - 5.0f) * 2.0f, (radius - 5.0f) * 2.0f);
+
+    juce::Path pointer;
+    const float pointerLength = radius * 0.66f;
+    pointer.startNewSubPath (cx + std::cos (angle) * (radius * 0.28f),
+                             cy + std::sin (angle) * (radius * 0.28f));
+    pointer.lineTo (cx + std::cos (angle) * pointerLength,
+                    cy + std::sin (angle) * pointerLength);
+    g.setColour (textMain);
+    g.strokePath (pointer, juce::PathStrokeType (3.0f, juce::PathStrokeType::rounded));
+
+    juce::ignoreUnused (slider);
+}
+
+void WaveForgeLookAndFeel::drawComboBox (juce::Graphics& g, int width, int height, bool,
+                                          int, int, int, int, juce::ComboBox& box)
+{
+    auto bounds = juce::Rectangle<float> (0.0f, 0.0f, (float) width, (float) height);
+    g.setColour (panelHi);
+    g.fillRoundedRectangle (bounds, 7.0f);
+    g.setColour (juce::Colour (0xff30445d));
+    g.drawRoundedRectangle (bounds.reduced (0.5f), 7.0f, 1.0f);
+
+    juce::Path arrow;
+    const float cx = (float) width - 17.0f;
+    const float cy = (float) height * 0.5f;
+    arrow.startNewSubPath (cx - 4.0f, cy - 2.0f);
+    arrow.lineTo (cx, cy + 2.0f);
+    arrow.lineTo (cx + 4.0f, cy - 2.0f);
+    g.setColour (accent);
+    g.strokePath (arrow, juce::PathStrokeType (1.8f, juce::PathStrokeType::curved,
+                                               juce::PathStrokeType::rounded));
+    juce::ignoreUnused (box);
+}
+
+void WaveForgeLookAndFeel::drawButtonBackground (juce::Graphics& g, juce::Button& button,
+                                                   const juce::Colour&,
+                                                   bool highlighted, bool down)
+{
+    auto bounds = button.getLocalBounds().toFloat().reduced (0.5f);
+    auto colour = button.getToggleState() ? accent.withAlpha (0.22f) : panelHi;
+    if (highlighted) colour = colour.brighter (0.12f);
+    if (down) colour = colour.darker (0.12f);
+    g.setColour (colour);
+    g.fillRoundedRectangle (bounds, 7.0f);
+    g.setColour (button.getToggleState() ? accent : juce::Colour (0xff30445d));
+    g.drawRoundedRectangle (bounds, 7.0f, 1.0f);
+}
+
+WaveForgeWaveDisplay::WaveForgeWaveDisplay (WaveForgeProcessor& p)
+    : processor (p), position (p.apvts.getRawParameterValue ("wtPos"))
+{
+    startTimerHz (24);
+}
+
+void WaveForgeWaveDisplay::timerCallback()
+{
+    repaint();
+}
+
+float WaveForgeWaveDisplay::sampleFrame (int frame, float phase) noexcept
+{
+    const float p = phase - std::floor (phase);
+    const float sine = std::sin (juce::MathConstants<float>::twoPi * p);
+    switch (frame)
+    {
+        case 0: return sine;
+        case 1: return std::asin (sine) * (2.0f / juce::MathConstants<float>::pi);
+        case 2: return 2.0f * p - 1.0f;
+        case 3: return p < 0.5f ? 1.0f : -1.0f;
+        case 4: return p < 0.25f ? 1.0f : -1.0f;
+        case 5: return 0.58f * std::sin (juce::MathConstants<float>::twoPi * p)
+                      + 0.28f * std::sin (juce::MathConstants<float>::twoPi * 2.0f * p)
+                      + 0.14f * std::sin (juce::MathConstants<float>::twoPi * 4.0f * p);
+        case 6: return 0.62f * std::sin (juce::MathConstants<float>::twoPi * p)
+                      + 0.38f * std::sin (juce::MathConstants<float>::twoPi * 5.0f * p);
+        default: return 0.55f * sine + 0.30f * std::sin (juce::MathConstants<float>::twoPi * 3.0f * p)
+                            + 0.15f * std::sin (juce::MathConstants<float>::twoPi * 7.0f * p);
+    }
+}
+
+void WaveForgeWaveDisplay::paint (juce::Graphics& g)
+{
+    auto bounds = getLocalBounds().toFloat();
+    g.setColour (juce::Colour (0xff0c1522));
+    g.fillRoundedRectangle (bounds, 10.0f);
+    g.setColour (juce::Colour (0xff263950));
+    g.drawRoundedRectangle (bounds.reduced (0.5f), 10.0f, 1.0f);
+
+    auto plot = bounds.reduced (14.0f, 12.0f);
+    plot.removeFromTop (18.0f);
+    g.setColour (juce::Colour (0xff203249));
+    for (int i = 1; i < 4; ++i)
+    {
+        const float yy = plot.getY() + plot.getHeight() * (float) i / 4.0f;
+        g.drawHorizontalLine ((int) yy, plot.getX(), plot.getRight());
+    }
+    for (int i = 1; i < 8; ++i)
+    {
+        const float xx = plot.getX() + plot.getWidth() * (float) i / 8.0f;
+        g.drawVerticalLine ((int) xx, plot.getY(), plot.getBottom());
+    }
+
+    const float pos = position != nullptr ? juce::jlimit (0.0f, 1.0f, position->load()) : 0.0f;
+    const float framePos = pos * 7.0f;
+    const int frameA = juce::jlimit (0, 7, (int) framePos);
+    const int frameB = juce::jmin (7, frameA + 1);
+    const float blend = framePos - (float) frameA;
+
+    juce::Path wave;
+    constexpr int points = 512;
+    for (int i = 0; i < points; ++i)
+    {
+        const float phase = (float) i / (float) (points - 1);
+        const float a = sampleFrame (frameA, phase);
+        const float b = sampleFrame (frameB, phase);
+        const float value = a + (b - a) * blend;
+        const float px = plot.getX() + phase * plot.getWidth();
+        const float py = plot.getCentreY() - value * plot.getHeight() * 0.39f;
+        if (i == 0) wave.startNewSubPath (px, py);
+        else wave.lineTo (px, py);
+    }
+
+    g.setColour (accent.withAlpha (0.12f));
+    juce::Path glow = wave;
+    glow.applyTransform (juce::AffineTransform::translation (0.0f, 1.0f));
+    g.strokePath (glow, juce::PathStrokeType (7.0f));
+    g.setColour (accent);
+    g.strokePath (wave, juce::PathStrokeType (2.2f, juce::PathStrokeType::curved,
+                                               juce::PathStrokeType::rounded));
+
+    const auto nameA = WavetableBank::frameName (frameA);
+    const auto nameB = WavetableBank::frameName (frameB);
+    g.setColour (textMain);
+    g.setFont (juce::Font (11.0f, juce::Font::bold));
+    g.drawText (blend < 0.03f ? nameA : nameA + "  →  " + nameB,
+                plot.getX(), bounds.getY() + 5.0f, plot.getWidth(), 15.0f,
+                juce::Justification::centredLeft);
+}
+
+void WaveForgePageContent::paint (juce::Graphics& g)
+{
+    g.fillAll (juce::Colour (0xff111824));
+    for (const auto& card : cards)
+    {
+        g.setColour (juce::Colour (0xff172334));
+        g.fillRoundedRectangle (card.toFloat(), 9.0f);
+        g.setColour (juce::Colour (0xff26384e));
+        g.drawRoundedRectangle (card.toFloat().reduced (0.5f), 9.0f, 1.0f);
+    }
+}
+
 WaveForgeParameterPage::WaveForgeParameterPage (
     WaveForgeProcessor& processor,
-    std::initializer_list<std::pair<const char*, const char*>> parameters)
+    std::initializer_list<std::pair<const char*, const char*>> parameters,
+    bool showWaveform)
     : audioProcessor (processor)
 {
+    addAndMakeVisible (viewport);
+    viewport.setViewedComponent (&content, false);
+    viewport.setScrollBarsShown (true, false);
+    viewport.setScrollBarThickness (8);
+
+    if (showWaveform)
+    {
+        waveform = std::make_unique<WaveForgeWaveDisplay> (processor);
+        content.addAndMakeVisible (*waveform);
+    }
+
     for (const auto& item : parameters)
     {
         const juce::String id (item.first);
@@ -16,24 +234,27 @@ WaveForgeParameterPage::WaveForgeParameterPage (
         auto label = std::make_unique<juce::Label>();
         label->setText (name, juce::dontSendNotification);
         label->setJustificationType (juce::Justification::centred);
-        label->setColour (juce::Label::textColourId, juce::Colour (0xffc8d0df));
-        addAndMakeVisible (*label);
+        label->setFont (juce::Font (10.5f, juce::Font::bold));
+        label->setColour (juce::Label::textColourId, textMuted);
+        content.addAndMakeVisible (*label);
         labels.push_back (std::move (label));
 
         if (dynamic_cast<juce::AudioParameterBool*> (parameter) != nullptr)
         {
             auto button = std::make_unique<juce::ToggleButton>();
             button->setButtonText (name);
-            addAndMakeVisible (*button);
+            button->setLookAndFeel (&lookAndFeel);
+            button->setColour (juce::ToggleButton::textColourId, textMain);
+            content.addAndMakeVisible (*button);
             buttonAttachments.push_back (std::make_unique<ButtonAttachment> (audioProcessor.apvts, id, *button));
             controls.push_back (std::move (button));
         }
         else if (dynamic_cast<juce::AudioParameterChoice*> (parameter) != nullptr)
         {
             auto combo = std::make_unique<juce::ComboBox>();
-            if (auto* choice = dynamic_cast<juce::AudioParameterChoice*> (parameter))
-                combo->addItemList (parameter->getAllValueStrings(), 1);
-            addAndMakeVisible (*combo);
+            combo->addItemList (parameter->getAllValueStrings(), 1);
+            combo->setLookAndFeel (&lookAndFeel);
+            content.addAndMakeVisible (*combo);
             comboAttachments.push_back (std::make_unique<ComboAttachment> (audioProcessor.apvts, id, *combo));
             controls.push_back (std::move (combo));
         }
@@ -41,13 +262,12 @@ WaveForgeParameterPage::WaveForgeParameterPage (
         {
             auto slider = std::make_unique<juce::Slider>();
             slider->setSliderStyle (juce::Slider::RotaryHorizontalVerticalDrag);
-            slider->setTextBoxStyle (juce::Slider::TextBoxBelow, false, 76, 20);
-            slider->setColour (juce::Slider::rotarySliderFillColourId, juce::Colour (0xff29d3c2));
-            slider->setColour (juce::Slider::rotarySliderOutlineColourId, juce::Colour (0xff35445a));
-            slider->setColour (juce::Slider::thumbColourId, juce::Colour (0xfff3f6ff));
-            slider->setColour (juce::Slider::textBoxTextColourId, juce::Colour (0xfff3f6ff));
-            slider->setColour (juce::Slider::textBoxBackgroundColourId, juce::Colour (0xff171f2d));
-            addAndMakeVisible (*slider);
+            slider->setTextBoxStyle (juce::Slider::TextBoxBelow, false, 76, 18);
+            slider->setLookAndFeel (&lookAndFeel);
+            slider->setColour (juce::Slider::textBoxTextColourId, textMain);
+            slider->setColour (juce::Slider::textBoxBackgroundColourId, juce::Colour (0xff0b1420));
+            slider->setColour (juce::Slider::textBoxOutlineColourId, juce::Colour (0xff26384e));
+            content.addAndMakeVisible (*slider);
             sliderAttachments.push_back (std::make_unique<SliderAttachment> (audioProcessor.apvts, id, *slider));
             controls.push_back (std::move (slider));
         }
@@ -61,35 +281,49 @@ void WaveForgeParameterPage::paint (juce::Graphics& g)
 
 void WaveForgeParameterPage::resized()
 {
-    auto area = getLocalBounds().reduced (18, 12);
-    constexpr int columns = 5;
-    constexpr int cellHeight = 132;
-    const int cellWidth = area.getWidth() / columns;
+    viewport.setBounds (getLocalBounds());
+    const int width = juce::jmax (1, viewport.getWidth() - 12);
+    constexpr int columns = 4;
+    constexpr int cellHeight = 126;
+    constexpr int gap = 8;
+    const int cellWidth = (width - 32 - gap * (columns - 1)) / columns;
+    const int top = waveform != nullptr ? 176 : 14;
+    const int rows = (int) (controls.size() + (size_t) columns - 1) / columns;
+    const int totalHeight = top + rows * (cellHeight + gap) + 14;
+    content.setSize (width, juce::jmax (viewport.getHeight(), totalHeight));
+    content.cards.clear();
+
+    if (waveform != nullptr)
+        waveform->setBounds (16, 12, width - 32, 150);
 
     for (size_t i = 0; i < controls.size(); ++i)
     {
         const int row = (int) i / columns;
         const int col = (int) i % columns;
-        auto cell = juce::Rectangle<int> (area.getX() + col * cellWidth,
-                                          area.getY() + row * cellHeight,
-                                          cellWidth, cellHeight).reduced (5);
-        labels[i]->setBounds (cell.removeFromTop (22));
+        const int x = 16 + col * (cellWidth + gap);
+        const int y = top + row * (cellHeight + gap);
+        auto card = juce::Rectangle<int> (x, y, cellWidth, cellHeight);
+        content.cards.push_back (card);
+        labels[i]->setBounds (card.withY (card.getY() + 8).withHeight (20).reduced (5, 0));
+
         if (auto* slider = dynamic_cast<juce::Slider*> (controls[i].get()))
-            slider->setBounds (cell.reduced (8, 0));
+            slider->setBounds (card.withTrimmedTop (27).reduced (8, 1));
         else
-            controls[i]->setBounds (cell.reduced (8, 28));
+            controls[i]->setBounds (card.withTrimmedTop (34).reduced (8, 5));
     }
+    content.repaint();
 }
 
 WaveForgeEditor::WaveForgeEditor (WaveForgeProcessor& processor)
     : AudioProcessorEditor (&processor), audioProcessor (processor)
 {
+    setLookAndFeel (&lookAndFeel);
     title.setText ("WAVEFORGE", juce::dontSendNotification);
     title.setFont (juce::Font (25.0f, juce::Font::bold));
-    title.setColour (juce::Label::textColourId, juce::Colour (0xfff2f6ff));
-    subtitle.setText ("WAVETABLE SYNTHESIZER  /  JUCE", juce::dontSendNotification);
-    subtitle.setFont (juce::Font (10.0f, juce::Font::bold));
-    subtitle.setColour (juce::Label::textColourId, juce::Colour (0xff7f91a8));
+    title.setColour (juce::Label::textColourId, textMain);
+    subtitle.setText ("PROFESSIONAL WAVETABLE SYNTHESIZER", juce::dontSendNotification);
+    subtitle.setFont (juce::Font (9.5f, juce::Font::bold));
+    subtitle.setColour (juce::Label::textColourId, textMuted);
     addAndMakeVisible (title);
     addAndMakeVisible (subtitle);
     addAndMakeVisible (presetBrowser);
@@ -97,7 +331,12 @@ WaveForgeEditor::WaveForgeEditor (WaveForgeProcessor& processor)
     addAndMakeVisible (loadPreset);
     addAndMakeVisible (tabs);
 
-    presetBrowser.addItem ("Factory Presets", 1);
+    presetBrowser.setLookAndFeel (&lookAndFeel);
+    savePreset.setLookAndFeel (&lookAndFeel);
+    loadPreset.setLookAndFeel (&lookAndFeel);
+    tabs.setLookAndFeel (&lookAndFeel);
+
+    presetBrowser.addItem ("FACTORY PRESETS", 1);
     presetBrowser.addItem ("Init", 2);
     presetBrowser.addItem ("Deep Bass", 3);
     presetBrowser.addItem ("Wide Lead", 4);
@@ -109,8 +348,6 @@ WaveForgeEditor::WaveForgeEditor (WaveForgeProcessor& processor)
     {
         const int preset = presetBrowser.getSelectedId();
         if (preset <= 1) return;
-
-        // Start every factory preset from the plug-in's declared defaults.
         for (auto* parameter : audioProcessor.getParameters())
             parameter->setValueNotifyingHost (parameter->getDefaultValue());
 
@@ -120,7 +357,7 @@ WaveForgeEditor::WaveForgeEditor (WaveForgeProcessor& processor)
                 parameter->setValueNotifyingHost (parameter->convertTo0to1 (value));
         };
 
-        if (preset == 3) // Deep Bass
+        if (preset == 3)
         {
             set ("osc2On", 1.0f); set ("osc2Pos", 0.43f); set ("osc2Level", 0.38f);
             set ("osc2Semi", -12.0f); set ("subLevel", 0.72f);
@@ -129,28 +366,28 @@ WaveForgeEditor::WaveForgeEditor (WaveForgeProcessor& processor)
             set ("decay", 0.5f); set ("sustain", 0.72f); set ("release", 0.16f);
             set ("distMix", 0.18f); set ("distDrive", 16.0f);
         }
-        else if (preset == 4) // Wide Lead
+        else if (preset == 4)
         {
             set ("uniVoices", 6.0f); set ("uniDetune", 28.0f); set ("uniSpread", 1.0f);
             set ("osc2On", 1.0f); set ("osc2Level", 0.32f); set ("osc2Semi", 7.0f);
             set ("cutoff", 8500.0f); set ("chMix", 0.24f); set ("dlMix", 0.13f);
             set ("rvMix", 0.10f); set ("attack", 0.015f); set ("release", 0.55f);
         }
-        else if (preset == 5) // Soft Pad
+        else if (preset == 5)
         {
             set ("uniVoices", 4.0f); set ("uniDetune", 16.0f); set ("uniSpread", 0.95f);
             set ("attack", 1.1f); set ("decay", 2.0f); set ("sustain", 0.82f);
             set ("release", 3.2f); set ("cutoff", 4200.0f); set ("chMix", 0.28f);
             set ("rvMix", 0.38f);
         }
-        else if (preset == 6) // Pluck
+        else if (preset == 6)
         {
             set ("attack", 0.001f); set ("decay", 0.42f); set ("sustain", 0.04f);
             set ("release", 0.24f); set ("cutoff", 7800.0f); set ("fEnvAmt", 3.0f);
             set ("fAttack", 0.001f); set ("fDecay", 0.28f); set ("fSustain", 0.03f);
             set ("subLevel", 0.12f); set ("dlMix", 0.18f);
         }
-        else if (preset == 7) // Noise Sweep
+        else if (preset == 7)
         {
             set ("noiseLevel", 0.48f); set ("cutoff", 2400.0f); set ("fEnvAmt", 4.0f);
             set ("fAttack", 0.18f); set ("fDecay", 2.2f); set ("fSustain", 0.08f);
@@ -158,11 +395,8 @@ WaveForgeEditor::WaveForgeEditor (WaveForgeProcessor& processor)
         }
     };
 
-    savePreset.setColour (juce::TextButton::buttonColourId, juce::Colour (0xff1b9f98));
-    savePreset.setColour (juce::TextButton::textColourOffId, juce::Colour (0xff08121c));
-    loadPreset.setColour (juce::TextButton::buttonColourId, juce::Colour (0xff202c3d));
-    loadPreset.setColour (juce::TextButton::textColourOffId, juce::Colour (0xffe8eef8));
-
+    savePreset.setColour (juce::TextButton::textColourOffId, bg);
+    loadPreset.setColour (juce::TextButton::textColourOffId, textMain);
     savePreset.onClick = [this]
     {
         fileChooser = std::make_unique<juce::FileChooser> (
@@ -173,13 +407,11 @@ WaveForgeEditor::WaveForgeEditor (WaveForgeProcessor& processor)
             [this] (const juce::FileChooser& chooser)
             {
                 const auto file = chooser.getResult();
-                if (file == juce::File{})
-                    return;
+                if (file == juce::File{}) return;
                 if (auto xml = audioProcessor.apvts.copyState().createXml())
                     xml->writeTo (file);
             });
     };
-
     loadPreset.onClick = [this]
     {
         fileChooser = std::make_unique<juce::FileChooser> (
@@ -190,81 +422,86 @@ WaveForgeEditor::WaveForgeEditor (WaveForgeProcessor& processor)
             [this] (const juce::FileChooser& chooser)
             {
                 const auto file = chooser.getResult();
-                if (file == juce::File{})
-                    return;
+                if (file == juce::File{}) return;
                 std::unique_ptr<juce::XmlElement> xml (juce::XmlDocument::parse (file));
                 if (xml != nullptr && xml->hasTagName (audioProcessor.apvts.state.getType()))
                     audioProcessor.apvts.replaceState (juce::ValueTree::fromXml (*xml));
             });
     };
 
-    tabs.addTab ("OSC", juce::Colour (0xff111824),
-        new WaveForgeParameterPage (processor, {
-            { "wtPos", "WT Position" }, { "uniVoices", "Unison Voices" },
-            { "uniDetune", "Detune" }, { "uniSpread", "Stereo Spread" },
-            { "osc2On", "Oscillator 2" }, { "osc2Pos", "OSC 2 Position" },
-            { "osc2Level", "OSC 2 Level" }, { "osc2Semi", "OSC 2 Semitones" },
-            { "subLevel", "Sub Level" }, { "noiseLevel", "Noise Level" },
-            { "attack", "Amp Attack" }, { "decay", "Amp Decay" },
-            { "sustain", "Amp Sustain" }, { "release", "Amp Release" }
-        }), true);
+    tabs.addTab ("OSC", panel, new WaveForgeParameterPage (processor, {
+        { "wtPos", "WT POSITION" }, { "uniVoices", "UNISON VOICES" },
+        { "uniDetune", "DETUNE" }, { "uniSpread", "STEREO SPREAD" },
+        { "osc2On", "OSCILLATOR 2" }, { "osc2Pos", "OSC 2 POSITION" },
+        { "osc2Level", "OSC 2 LEVEL" }, { "osc2Semi", "OSC 2 SEMITONES" },
+        { "subLevel", "SUB LEVEL" }, { "noiseLevel", "NOISE LEVEL" },
+        { "attack", "AMP ATTACK" }, { "decay", "AMP DECAY" },
+        { "sustain", "AMP SUSTAIN" }, { "release", "AMP RELEASE" }
+    }, true), true);
 
-    tabs.addTab ("FILTER", juce::Colour (0xff111824),
-        new WaveForgeParameterPage (processor, {
-            { "fType", "Filter Type" }, { "cutoff", "Cutoff" },
-            { "resonance", "Resonance" }, { "fEnvAmt", "Envelope Amount" },
-            { "fAttack", "Filter Attack" }, { "fDecay", "Filter Decay" },
-            { "fSustain", "Filter Sustain" }, { "fRelease", "Filter Release" }
-        }), false);
+    tabs.addTab ("FILTER", panel, new WaveForgeParameterPage (processor, {
+        { "fType", "FILTER TYPE" }, { "cutoff", "CUTOFF" },
+        { "resonance", "RESONANCE" }, { "fEnvAmt", "ENV AMOUNT" },
+        { "fAttack", "ENV ATTACK" }, { "fDecay", "ENV DECAY" },
+        { "fSustain", "ENV SUSTAIN" }, { "fRelease", "ENV RELEASE" }
+    }), false);
 
-    tabs.addTab ("MOD", juce::Colour (0xff111824),
-        new WaveForgeParameterPage (processor, {
-            { "lfo1Shape", "LFO 1 Shape" }, { "lfo1Rate", "LFO 1 Rate" },
-            { "lfo1Fade", "LFO 1 Fade" }, { "lfo1Sync", "LFO 1 Key Sync" },
-            { "lfo2Shape", "LFO 2 Shape" }, { "lfo2Rate", "LFO 2 Rate" },
-            { "lfo2Fade", "LFO 2 Fade" }, { "lfo2Sync", "LFO 2 Key Sync" },
-            { "mod1Src", "Mod 1 Source" }, { "mod1Dst", "Mod 1 Target" }, { "mod1Amt", "Mod 1 Amount" },
-            { "mod2Src", "Mod 2 Source" }, { "mod2Dst", "Mod 2 Target" }, { "mod2Amt", "Mod 2 Amount" },
-            { "mod3Src", "Mod 3 Source" }, { "mod3Dst", "Mod 3 Target" }, { "mod3Amt", "Mod 3 Amount" },
-            { "mod4Src", "Mod 4 Source" }, { "mod4Dst", "Mod 4 Target" }, { "mod4Amt", "Mod 4 Amount" }
-        }), false);
+    tabs.addTab ("MOD", panel, new WaveForgeParameterPage (processor, {
+        { "lfo1Shape", "LFO 1 SHAPE" }, { "lfo1Rate", "LFO 1 RATE" },
+        { "lfo1Fade", "LFO 1 FADE" }, { "lfo1Sync", "LFO 1 KEY SYNC" },
+        { "lfo2Shape", "LFO 2 SHAPE" }, { "lfo2Rate", "LFO 2 RATE" },
+        { "lfo2Fade", "LFO 2 FADE" }, { "lfo2Sync", "LFO 2 KEY SYNC" },
+        { "mod1Src", "MOD 1 SOURCE" }, { "mod1Dst", "MOD 1 TARGET" }, { "mod1Amt", "MOD 1 AMOUNT" },
+        { "mod2Src", "MOD 2 SOURCE" }, { "mod2Dst", "MOD 2 TARGET" }, { "mod2Amt", "MOD 2 AMOUNT" },
+        { "mod3Src", "MOD 3 SOURCE" }, { "mod3Dst", "MOD 3 TARGET" }, { "mod3Amt", "MOD 3 AMOUNT" },
+        { "mod4Src", "MOD 4 SOURCE" }, { "mod4Dst", "MOD 4 TARGET" }, { "mod4Amt", "MOD 4 AMOUNT" }
+    }), false);
 
-    tabs.addTab ("FX", juce::Colour (0xff111824),
-        new WaveForgeParameterPage (processor, {
-            { "distType", "Distortion Type" }, { "distDrive", "Drive" }, { "distMix", "Distortion Mix" },
-            { "chRate", "Chorus Rate" }, { "chDepth", "Chorus Depth" },
-            { "chFeedback", "Chorus Feedback" }, { "chMix", "Chorus Mix" },
-            { "dlSync", "Delay Sync" }, { "dlTime", "Delay Time" },
-            { "dlFeedback", "Delay Feedback" }, { "dlTone", "Delay Tone" },
-            { "dlPing", "Ping Pong" }, { "dlMix", "Delay Mix" },
-            { "rvSize", "Reverb Size" }, { "rvDamp", "Damping" },
-            { "rvWidth", "Width" }, { "rvMix", "Reverb Mix" }
-        }), false);
+    tabs.addTab ("FX", panel, new WaveForgeParameterPage (processor, {
+        { "distType", "DISTORTION TYPE" }, { "distDrive", "DRIVE" }, { "distMix", "DIST MIX" },
+        { "chRate", "CHORUS RATE" }, { "chDepth", "CHORUS DEPTH" },
+        { "chFeedback", "CHORUS FEEDBACK" }, { "chMix", "CHORUS MIX" },
+        { "dlSync", "DELAY SYNC" }, { "dlTime", "DELAY TIME" },
+        { "dlFeedback", "DELAY FEEDBACK" }, { "dlTone", "DELAY TONE" },
+        { "dlPing", "PING PONG" }, { "dlMix", "DELAY MIX" },
+        { "rvSize", "REVERB SIZE" }, { "rvDamp", "DAMPING" },
+        { "rvWidth", "WIDTH" }, { "rvMix", "REVERB MIX" }
+    }), false);
 
-    tabs.addTab ("MASTER", juce::Colour (0xff111824),
-        new WaveForgeParameterPage (processor, { { "gain", "Output Gain (dB)" } }), false);
+    tabs.addTab ("MASTER", panel, new WaveForgeParameterPage (processor, {
+        { "gain", "OUTPUT GAIN" }
+    }), false);
 
     setResizable (true, true);
-    setResizeLimits (820, 600, 1500, 1100);
-    setSize (1120, 760);
+    setResizeLimits (900, 650, 1600, 1200);
+    setSize (1180, 820);
+}
+
+WaveForgeEditor::~WaveForgeEditor()
+{
+    setLookAndFeel (nullptr);
 }
 
 void WaveForgeEditor::paint (juce::Graphics& g)
 {
-    g.fillAll (juce::Colour (0xff0b111b));
-    g.setColour (juce::Colour (0xff29d3c2));
+    g.fillAll (bg);
+    g.setGradientFill (juce::ColourGradient (accent.withAlpha (0.9f), 0.0f, 0.0f,
+                                             juce::Colour (0xff168d9d), (float) getWidth(), 0.0f, false));
     g.fillRect (0, 0, getWidth(), 3);
+    g.setColour (juce::Colour (0xff1b2a3e));
+    g.drawHorizontalLine (77, 18.0f, (float) getWidth() - 18.0f);
 }
 
 void WaveForgeEditor::resized()
 {
     auto area = getLocalBounds().reduced (18);
-    auto header = area.removeFromTop (66);
-    auto buttons = header.removeFromRight (410);
-    presetBrowser.setBounds (buttons.removeFromLeft (170).reduced (3, 10));
-    savePreset.setBounds (buttons.removeFromLeft (112).reduced (3, 10));
-    loadPreset.setBounds (buttons.removeFromLeft (112).reduced (3, 10));
-    title.setBounds (header.removeFromTop (34));
+    auto header = area.removeFromTop (64);
+    auto controlsArea = header.removeFromRight (420);
+    presetBrowser.setBounds (controlsArea.removeFromLeft (172).reduced (3, 13));
+    savePreset.setBounds (controlsArea.removeFromLeft (116).reduced (3, 13));
+    loadPreset.setBounds (controlsArea.removeFromLeft (116).reduced (3, 13));
+    title.setBounds (header.removeFromTop (35));
     subtitle.setBounds (header);
+    area.removeFromTop (12);
     tabs.setBounds (area);
 }
