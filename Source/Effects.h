@@ -70,6 +70,10 @@ public:
             channel.assign (capacity, 0.0f);
         writeIndex = 0;
         toneState = {};
+        delayTimeSmooth.reset (sampleRate, 0.035);
+        delayTimeSmooth.setCurrentAndTargetValue ((float) (sampleRate * 0.35));
+        mixSmooth.reset (sampleRate, 0.012);
+        mixSmooth.setCurrentAndTargetValue (0.0f);
     }
 
     void reset() noexcept
@@ -78,17 +82,26 @@ public:
             std::fill (channel.begin(), channel.end(), 0.0f);
         writeIndex = 0;
         toneState = {};
+        mixSmooth.setCurrentAndTargetValue (0.0f);
+    }
+
+    bool isBypassed() const noexcept
+    {
+        return ! mixSmooth.isSmoothing() && mixSmooth.getCurrentValue() <= 0.0001f;
     }
 
     void setParams (float timeMs, float newFeedback, float toneHz,
                     bool newPingPong, float newMix) noexcept
     {
         const auto maxDelay = ring[0].empty() ? 1 : (int) ring[0].size() - 2;
-        delaySamples = juce::jlimit (1, maxDelay,
-            (int) std::round (sampleRate * juce::jlimit (1.0f, 2000.0f, timeMs) * 0.001));
+        const float targetSamples = juce::jlimit (1.0f, (float) maxDelay,
+            (float) (sampleRate * juce::jlimit (1.0f, 2000.0f, timeMs) * 0.001));
+        // Smooth time changes rather than jumping to a different ring-buffer
+        // read point, avoiding the clicks of an integer-sample delay switch.
+        delayTimeSmooth.setTargetValue (targetSamples);
         feedback = juce::jlimit (0.0f, 0.95f, newFeedback);
         pingPong = newPingPong;
-        mix = juce::jlimit (0.0f, 1.0f, newMix);
+        mixSmooth.setTargetValue (juce::jlimit (0.0f, 1.0f, newMix));
         const float cutoff = juce::jlimit (20.0f, (float) (sampleRate * 0.45),
                                            toneHz);
         toneCoeff = 1.0f - std::exp (-juce::MathConstants<float>::twoPi
@@ -105,11 +118,19 @@ public:
 
         for (int i = 0; i < buffer.getNumSamples(); ++i)
         {
-            const size_t readIndex = (writeIndex + size - (size_t) delaySamples) % size;
+            const float timeSamples = delayTimeSmooth.getNextValue();
+            const int whole = (int) std::ceil (timeSamples);
+            const float fraction = (float) whole - timeSamples;
+            const size_t read0 = (writeIndex + size - (size_t) whole) % size;
+            const size_t read1 = (read0 + 1) % size;
             const float inL = buffer.getSample (0, i);
             const float inR = channels > 1 ? buffer.getSample (1, i) : inL;
-            const float delayedL = ring[0][readIndex];
-            const float delayedR = channels > 1 ? ring[1][readIndex] : delayedL;
+            const float delayedL = ring[0][read0]
+                + fraction * (ring[0][read1] - ring[0][read0]);
+            const float delayedR = channels > 1
+                ? ring[1][read0] + fraction * (ring[1][read1] - ring[1][read0])
+                : delayedL;
+            const float wetMix = mixSmooth.getNextValue();
 
             toneState[0] += toneCoeff * (delayedL - toneState[0]);
             toneState[1] += toneCoeff * (delayedR - toneState[1]);
@@ -120,9 +141,9 @@ public:
             if (channels > 1)
                 ring[1][writeIndex] = inR + fbR * feedback;
 
-            buffer.setSample (0, i, inL + mix * (toneState[0] - inL));
+            buffer.setSample (0, i, inL + wetMix * (toneState[0] - inL));
             if (channels > 1)
-                buffer.setSample (1, i, inR + mix * (toneState[1] - inR));
+                buffer.setSample (1, i, inR + wetMix * (toneState[1] - inR));
 
             writeIndex = (writeIndex + 1) % size;
         }
@@ -133,7 +154,7 @@ private:
     std::array<float, 2> toneState {};
     double sampleRate = 44100.0;
     size_t writeIndex = 0;
-    int delaySamples = 1;
-    float feedback = 0.35f, mix = 0.0f, toneCoeff = 1.0f;
+    juce::SmoothedValue<float> delayTimeSmooth, mixSmooth;
+    float feedback = 0.35f, toneCoeff = 1.0f;
     bool pingPong = false;
 };
