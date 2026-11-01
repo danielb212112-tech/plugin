@@ -92,9 +92,71 @@ WaveForgeEditor::WaveForgeEditor (WaveForgeProcessor& processor)
     subtitle.setColour (juce::Label::textColourId, juce::Colour (0xff7f91a8));
     addAndMakeVisible (title);
     addAndMakeVisible (subtitle);
+    addAndMakeVisible (presetBrowser);
     addAndMakeVisible (savePreset);
     addAndMakeVisible (loadPreset);
     addAndMakeVisible (tabs);
+
+    presetBrowser.addItem ("Factory Presets", 1);
+    presetBrowser.addItem ("Init", 2);
+    presetBrowser.addItem ("Deep Bass", 3);
+    presetBrowser.addItem ("Wide Lead", 4);
+    presetBrowser.addItem ("Soft Pad", 5);
+    presetBrowser.addItem ("Pluck", 6);
+    presetBrowser.addItem ("Noise Sweep", 7);
+    presetBrowser.setSelectedId (1, juce::dontSendNotification);
+    presetBrowser.onChange = [this]
+    {
+        const int preset = presetBrowser.getSelectedId();
+        if (preset <= 1) return;
+
+        // Start every factory preset from the plug-in's declared defaults.
+        for (auto* parameter : audioProcessor.getParameters())
+            parameter->setValueNotifyingHost (parameter->getDefaultValue());
+
+        auto set = [this] (const char* id, float value)
+        {
+            if (auto* parameter = audioProcessor.apvts.getParameter (id))
+                parameter->setValueNotifyingHost (parameter->convertTo0to1 (value));
+        };
+
+        if (preset == 3) // Deep Bass
+        {
+            set ("osc2On", 1.0f); set ("osc2Pos", 0.43f); set ("osc2Level", 0.38f);
+            set ("osc2Semi", -12.0f); set ("subLevel", 0.72f);
+            set ("cutoff", 190.0f); set ("resonance", 0.36f); set ("fEnvAmt", 2.8f);
+            set ("fDecay", 0.32f); set ("fSustain", 0.0f); set ("attack", 0.005f);
+            set ("decay", 0.5f); set ("sustain", 0.72f); set ("release", 0.16f);
+            set ("distMix", 0.18f); set ("distDrive", 16.0f);
+        }
+        else if (preset == 4) // Wide Lead
+        {
+            set ("uniVoices", 6.0f); set ("uniDetune", 28.0f); set ("uniSpread", 1.0f);
+            set ("osc2On", 1.0f); set ("osc2Level", 0.32f); set ("osc2Semi", 7.0f);
+            set ("cutoff", 8500.0f); set ("chMix", 0.24f); set ("dlMix", 0.13f);
+            set ("rvMix", 0.10f); set ("attack", 0.015f); set ("release", 0.55f);
+        }
+        else if (preset == 5) // Soft Pad
+        {
+            set ("uniVoices", 4.0f); set ("uniDetune", 16.0f); set ("uniSpread", 0.95f);
+            set ("attack", 1.1f); set ("decay", 2.0f); set ("sustain", 0.82f);
+            set ("release", 3.2f); set ("cutoff", 4200.0f); set ("chMix", 0.28f);
+            set ("rvMix", 0.38f);
+        }
+        else if (preset == 6) // Pluck
+        {
+            set ("attack", 0.001f); set ("decay", 0.42f); set ("sustain", 0.04f);
+            set ("release", 0.24f); set ("cutoff", 7800.0f); set ("fEnvAmt", 3.0f);
+            set ("fAttack", 0.001f); set ("fDecay", 0.28f); set ("fSustain", 0.03f);
+            set ("subLevel", 0.12f); set ("dlMix", 0.18f);
+        }
+        else if (preset == 7) // Noise Sweep
+        {
+            set ("noiseLevel", 0.48f); set ("cutoff", 2400.0f); set ("fEnvAmt", 4.0f);
+            set ("fAttack", 0.18f); set ("fDecay", 2.2f); set ("fSustain", 0.08f);
+            set ("rvMix", 0.22f); set ("release", 1.2f);
+        }
+    };
 
     savePreset.setColour (juce::TextButton::buttonColourId, juce::Colour (0xff1b9f98));
     savePreset.setColour (juce::TextButton::textColourOffId, juce::Colour (0xff08121c));
@@ -198,9 +260,10 @@ void WaveForgeEditor::resized()
 {
     auto area = getLocalBounds().reduced (18);
     auto header = area.removeFromTop (66);
-    auto buttons = header.removeFromRight (230);
-    savePreset.setBounds (buttons.removeFromLeft (108).reduced (3, 10));
-    loadPreset.setBounds (buttons.removeFromLeft (108).reduced (3, 10));
+    auto buttons = header.removeFromRight (410);
+    presetBrowser.setBounds (buttons.removeFromLeft (170).reduced (3, 10));
+    savePreset.setBounds (buttons.removeFromLeft (112).reduced (3, 10));
+    loadPreset.setBounds (buttons.removeFromLeft (112).reduced (3, 10));
     title.setBounds (header.removeFromTop (34));
     subtitle.setBounds (header);
     tabs.setBounds (area);
