@@ -195,6 +195,62 @@ void WaveForgeWaveDisplay::paint (juce::Graphics& g)
                 juce::Justification::centredLeft);
 }
 
+WaveForgeUnisonDisplay::WaveForgeUnisonDisplay (WaveForgeProcessor& p)
+    : voices (p.apvts.getRawParameterValue ("uniVoices")),
+      detune (p.apvts.getRawParameterValue ("uniDetune")),
+      spread (p.apvts.getRawParameterValue ("uniSpread"))
+{
+    startTimerHz (20);
+}
+
+void WaveForgeUnisonDisplay::timerCallback()
+{
+    repaint();
+}
+
+void WaveForgeUnisonDisplay::paint (juce::Graphics& g)
+{
+    auto area = getLocalBounds().toFloat();
+    g.setColour (juce::Colour (0xff0c1522));
+    g.fillRoundedRectangle (area, 9.0f);
+    g.setColour (juce::Colour (0xff263950));
+    g.drawRoundedRectangle (area.reduced (0.5f), 9.0f, 1.0f);
+
+    const int count = voices != nullptr ? juce::jlimit (1, 8, (int) std::round (voices->load())) : 1;
+    const float width = spread != nullptr ? juce::jlimit (0.0f, 1.0f, spread->load()) : 0.0f;
+    const float cents = detune != nullptr ? juce::jlimit (0.0f, 100.0f, detune->load()) : 0.0f;
+
+    g.setColour (textMuted);
+    g.setFont (juce::Font (10.0f, juce::Font::bold));
+    g.drawText ("UNISON VOICES", 12, 5, 130, 16, juce::Justification::centredLeft);
+    g.drawText (juce::String (count) + " VOICES   •   " + juce::String (cents, 1)
+                + " CENTS   •   " + juce::String (juce::roundToInt (width * 100.0f))
+                + "% WIDTH",
+                145, 5, juce::jmax (0, getWidth() - 157), 16, juce::Justification::centredRight);
+
+    auto plot = area.reduced (18.0f, 25.0f);
+    const float mid = plot.getCentreX();
+    const float spreadPx = plot.getWidth() * 0.44f * width;
+    const float centerY = plot.getCentreY();
+
+    g.setColour (juce::Colour (0xff25374c));
+    g.drawHorizontalLine ((int) centerY, plot.getX(), plot.getRight());
+    g.setColour (accent.withAlpha (0.18f));
+    g.drawVerticalLine ((int) mid, plot.getY(), plot.getBottom());
+
+    for (int i = 0; i < count; ++i)
+    {
+        const float normalized = count == 1 ? 0.0f : ((float) i / (float) (count - 1)) * 2.0f - 1.0f;
+        const float x = mid + normalized * spreadPx;
+        const float detuneOffset = normalized * cents * 0.22f;
+        const float y = centerY + detuneOffset;
+        g.setColour (accent.withAlpha (0.28f));
+        g.drawLine (x, plot.getY() + 2.0f, x, plot.getBottom() - 2.0f, 2.0f);
+        g.setColour (accent);
+        g.fillEllipse (x - 4.0f, y - 4.0f, 8.0f, 8.0f);
+    }
+}
+
 void WaveForgePageContent::paint (juce::Graphics& g)
 {
     g.fillAll (juce::Colour (0xff111824));
@@ -224,6 +280,8 @@ WaveForgeParameterPage::WaveForgeParameterPage (
         waveform2 = std::make_unique<WaveForgeWaveDisplay> (processor, "osc2Pos", "OSCILLATOR 2");
         content.addAndMakeVisible (*waveform);
         content.addAndMakeVisible (*waveform2);
+        unisonDisplay = std::make_unique<WaveForgeUnisonDisplay> (processor);
+        content.addAndMakeVisible (*unisonDisplay);
     }
 
     for (const auto& item : parameters)
@@ -290,7 +348,7 @@ void WaveForgeParameterPage::resized()
     constexpr int cellHeight = 126;
     constexpr int gap = 8;
     const int cellWidth = (width - 32 - gap * (columns - 1)) / columns;
-    const int top = waveform != nullptr ? 180 : 14;
+    const int top = waveform != nullptr ? 254 : 14;
     const int rows = (int) (controls.size() + (size_t) columns - 1) / columns;
     const int totalHeight = top + rows * (cellHeight + gap) + 14;
     content.setSize (width, juce::jmax (viewport.getHeight(), totalHeight));
@@ -300,9 +358,11 @@ void WaveForgeParameterPage::resized()
     {
         const int displayGap = 12;
         const int displayWidth = (width - 32 - displayGap) / 2;
-        waveform->setBounds (16, 12, displayWidth, 150);
+        waveform->setBounds (16, 12, displayWidth, 138);
         if (waveform2 != nullptr)
-            waveform2->setBounds (16 + displayWidth + displayGap, 12, displayWidth, 150);
+            waveform2->setBounds (16 + displayWidth + displayGap, 12, displayWidth, 138);
+        if (unisonDisplay != nullptr)
+            unisonDisplay->setBounds (16, 158, width - 32, 82);
     }
 
     for (size_t i = 0; i < controls.size(); ++i)
