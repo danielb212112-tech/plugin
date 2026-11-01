@@ -36,6 +36,14 @@ struct VoiceParams
     float unisonDetune  = 20.0f;
     float unisonSpread  = 0.7f;
 
+    // Additional sound sources
+    bool  osc2Enabled = false;
+    float osc2WtPosition = 0.286f;
+    float osc2Level = 0.0f;
+    int   osc2Semitones = 0;
+    float subLevel = 0.0f;
+    float noiseLevel = 0.0f;
+
     juce::ADSR::Parameters ampEnv;
 
     // Filter
@@ -102,8 +110,12 @@ public:
         frequency = juce::MidiMessage::getMidiNoteInHertz (midiNote);
         level     = velocity;
 
+        subPhase = 0.0;
         for (int u = 0; u < maxUnison; ++u)
+        {
             phases[(size_t) u] = (u == 0) ? 0.0 : (double) random.nextFloat();
+            phases2[(size_t) u] = phases[(size_t) u];
+        }
 
         for (int l = 0; l < 2; ++l)
         {
@@ -190,10 +202,32 @@ public:
                 oscL += s * gL[su];
                 oscR += s * gR[su];
 
+                if (params.osc2Enabled && params.osc2Level > 0.0001f)
+                {
+                    const float ph2 = (float) phases2[su];
+                    float s2 = bank.read (frame2A, lvl2[su], ph2);
+                    if (frame2Mix > 0.0f)
+                        s2 += frame2Mix * (bank.read (frame2A + 1, lvl2[su], ph2) - s2);
+                    oscL += s2 * gL[su] * params.osc2Level;
+                    oscR += s2 * gR[su] * params.osc2Level;
+                    phases2[su] += inc2[su];
+                    if (phases2[su] >= 1.0)
+                        phases2[su] -= 1.0;
+                }
+
                 phases[su] += inc[su];
                 if (phases[su] >= 1.0)
                     phases[su] -= 1.0;
             }
+
+            // Sub is a clean sine one octave below the played note; noise is per-voice white noise.
+            const float sub = std::sin (juce::MathConstants<float>::twoPi * (float) subPhase)
+                              * params.subLevel;
+            subPhase += (frequency * 0.5) / sr;
+            if (subPhase >= 1.0) subPhase -= 1.0;
+            const float noise = (random.nextFloat() * 2.0f - 1.0f) * params.noiseLevel;
+            oscL += sub + noise;
+            oscR += sub + noise;
 
             const float g    = ampAdsr.getNextSample() * level * 0.25f * volumeGain;
             const float outL = filter.processSample (0, oscL) * g;
@@ -316,6 +350,20 @@ private:
             lvl[su] = WavetableBank::levelForFrequency (f, sr2);
         }
 
+        // ---- Oscillator 2 wavetable and pitch ----
+        const float pos2 = juce::jlimit (0.0f, 1.0f, params.osc2WtPosition);
+        const float pos2F = pos2 * (float) (WavetableBank::numFrames - 1);
+        frame2A = juce::jlimit (0, WavetableBank::numFrames - 2, (int) pos2F);
+        frame2Mix = juce::jlimit (0.0f, 1.0f, pos2F - (float) frame2A);
+        const double osc2PitchMul = std::pow (2.0, (double) params.osc2Semitones / 12.0);
+        for (int u = 0; u < nUni; ++u)
+        {
+            const auto su = (size_t) u;
+            const double f2 = baseFreq[su] * pitchMul * osc2PitchMul;
+            inc2[su] = f2 / sr;
+            lvl2[su] = WavetableBank::levelForFrequency (f2, sr);
+        }
+
         // ---- פילטר ----
         const float maxFreq = (float) (sr * 0.45);
         const float cutoff  = juce::jlimit (20.0f, maxFreq,
@@ -336,6 +384,10 @@ private:
     juce::dsp::StateVariableTPTFilter<float> filter;
 
     std::array<double, maxUnison> phases   {};
+    std::array<double, maxUnison> phases2  {};
+    std::array<double, maxUnison> inc2     {};
+    std::array<int,    maxUnison> lvl2     {};
+    double subPhase = 0.0;
     std::array<double, maxUnison> baseFreq {};
     std::array<double, maxUnison> inc      {};
     std::array<float,  maxUnison> gL {}, gR {};
@@ -347,6 +399,8 @@ private:
 
     int   frameA = 2;
     float frameMix = 0.0f;
+    int frame2A = 2;
+    float frame2Mix = 0.0f;
     float volumeGain = 1.0f;
 
     double noteTime         = 0.0;
