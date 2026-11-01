@@ -456,7 +456,8 @@ void WaveForgeEnvelopeEditor::mouseUp (const juce::MouseEvent&)
 WaveForgeFilterDisplay::WaveForgeFilterDisplay (WaveForgeProcessor& p)
     : type (p.apvts.getRawParameterValue ("fType")),
       cutoff (p.apvts.getRawParameterValue ("cutoff")),
-      resonance (p.apvts.getRawParameterValue ("resonance"))
+      resonance (p.apvts.getRawParameterValue ("resonance")),
+      slope (p.apvts.getRawParameterValue ("fSlope"))
 {
     startTimerHz (24);
 }
@@ -470,8 +471,11 @@ void WaveForgeFilterDisplay::paint (juce::Graphics& g)
     g.drawRoundedRectangle (area.reduced (0.5f), 9.0f, 1.0f);
     g.setColour (textMain);
     g.setFont (juce::Font (10.5f, juce::Font::bold));
-    g.drawText ("FILTER RESPONSE  /  APPROXIMATE PREVIEW", 13, 6, getWidth() - 26, 17,
+    g.drawText ("FILTER RESPONSE  /  APPROXIMATE PREVIEW", 13, 6, getWidth() - 118, 17,
                 juce::Justification::centredLeft);
+    g.setColour (textMuted);
+    g.drawText (slope != nullptr && slope->load() > 0.5f ? "24 dB/oct" : "12 dB/oct",
+                getWidth() - 111, 6, 98, 17, juce::Justification::centredRight);
     auto plot = area.reduced (24.0f, 30.0f);
     g.setColour (juce::Colour (0xff203249));
     for (int i = 1; i < 4; ++i)
@@ -483,6 +487,7 @@ void WaveForgeFilterDisplay::paint (juce::Graphics& g)
     const float freq = cutoff != nullptr ? juce::jlimit (20.0f, 20000.0f, cutoff->load()) : 3000.0f;
     const float res = resonance != nullptr ? juce::jlimit (0.0f, 1.0f, resonance->load()) : 0.2f;
     const int mode = type != nullptr ? (int) type->load() : 0;
+    const bool steep = slope != nullptr && slope->load() > 0.5f;
     const float f0 = std::log (freq / 20.0f) / std::log (1000.0f);
     juce::Path curve;
     for (int i = 0; i <= 240; ++i)
@@ -493,7 +498,10 @@ void WaveForgeFilterDisplay::paint (juce::Graphics& g)
         const float high = 1.0f / std::sqrt (1.0f + std::exp (juce::jlimit (-30.0f, 30.0f, -2.0f * diff)));
         const float peak = res * 0.45f * std::exp (-diff * diff * 1.2f);
         const float band = std::exp (-diff * diff * 0.28f) * (0.55f + res * 0.4f);
-        const float magnitude = juce::jlimit (0.0f, 1.0f, (mode == 0 ? low : mode == 1 ? band : high) + (mode == 1 ? 0.0f : peak));
+        const float base = mode == 0 ? low : mode == 1 ? band : high;
+        const float shaped = steep ? base * base : base;
+        const float magnitude = juce::jlimit (0.0f, 1.0f,
+            shaped + (mode == 1 ? 0.0f : peak));
         const float px = plot.getX() + x * plot.getWidth();
         const float py = plot.getBottom() - magnitude * plot.getHeight() * 0.89f;
         if (i == 0) curve.startNewSubPath (px, py);
@@ -920,7 +928,8 @@ void WaveForgeParameterPage::resized()
             envelopeEditor->setBounds (margin + panelWidth + gap, margin,
                                        panelWidth, previewHeight);
         top = margin + previewHeight + 22;
-        cardHeight = juce::jmin (150, height - top - margin);
+        cardHeight = juce::jmin (150,
+            (height - top - margin - gap * (rows - 1)) / juce::jmax (1, rows));
     }
     else if (levelMeter != nullptr)
     {
@@ -1082,8 +1091,10 @@ WaveForgeEditor::WaveForgeEditor (WaveForgeProcessor& processor)
     }, true, "amp"), true);
 
     tabs.addTab ("FILTER", panel, new WaveForgeParameterPage (processor, {
-        { "fType", "FILTER TYPE" }, { "cutoff", "CUTOFF" },
-        { "resonance", "RESONANCE" }, { "fEnvAmt", "ENV AMOUNT" }
+        { "fType", "FILTER TYPE" }, { "fSlope", "SLOPE" },
+        { "cutoff", "CUTOFF" }, { "resonance", "RESONANCE" },
+        { "fEnvAmt", "ENV AMOUNT" }, { "fKeyTrack", "KEY TRACK" },
+        { "fDrive", "DRIVE" }
     }, false, "filter"), false);
 
     tabs.addTab ("MOD", panel, new WaveForgeModulationPage (processor), false);
