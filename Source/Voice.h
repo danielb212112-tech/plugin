@@ -256,14 +256,15 @@ public:
             // Both stages always run, so switching slopes can crossfade without
             // discontinuities or stale filter state.
             const float res = resonanceSmooth.getNextValue();
-            const float q = 0.707f + res * 7.0f;
+            const float slopeBlend = slopeSmooth.getNextValue();
+            // Cascading resonant stages squares their peaks. Decrease the
+            // first stage's Q as the 24 dB path engages, keeping resonant
+            // patches manageable at both slope settings.
+            const float q = 0.707f + res * (7.0f - 4.5f * slopeBlend);
             filter.setCutoffFrequency (smoothCutoff);
             filter.setResonance (q);
             filterSecond.setCutoffFrequency (smoothCutoff);
-            // A gentler second-stage resonance avoids squared peaks and
-            // excess output gain when the 24 dB mode is engaged.
             filterSecond.setResonance (0.707f + res * 1.8f);
-            const float slopeBlend = slopeSmooth.getNextValue();
             const float driveDb = driveSmooth.getNextValue();
 
             float oscL = 0.0f, oscR = 0.0f;
