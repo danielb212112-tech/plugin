@@ -318,12 +318,11 @@ void WaveForgeProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::M
     };
 
     // 1. Distortion
-    const float distMix = get ("distMix");
-    if (distMix > 0.0001f)
-    {
-        distortion.setParams ((int) get ("distType"), get ("distDrive"), distMix);
-        distortion.process (buffer);
-    }
+    // Oversampling has constant FIR latency, even at 0% wet. Keep processing
+    // every block so the host-reported latency and the dry/wet alignment
+    // remain correct when the user automates the Mix parameter.
+    distortion.setParams ((int) get ("distType"), get ("distDrive"), get ("distMix"));
+    distortion.process (buffer);
 
     // 2. Chorus
     const float chMix = get ("chMix");
