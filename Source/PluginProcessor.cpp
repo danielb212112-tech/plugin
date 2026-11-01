@@ -111,6 +111,17 @@ juce::AudioProcessorValueTreeState::ParameterLayout WaveForgeProcessor::createLa
         ParameterID { "fEnvAmt", 1 }, "Filter Env Amount (oct)",
         NormalisableRange<float> (-6.0f, 6.0f, 0.01f), 0.0f));
 
+    // Filter character: defaults preserve existing sessions and factory sounds.
+    layout.add (std::make_unique<AudioParameterChoice> (
+        ParameterID { "fSlope", 1 }, "Filter Slope",
+        StringArray { "12 dB/oct", "24 dB/oct" }, 0));
+    layout.add (std::make_unique<AudioParameterFloat> (
+        ParameterID { "fKeyTrack", 1 }, "Filter Key Tracking",
+        NormalisableRange<float> (0.0f, 1.0f, 0.01f), 0.0f));
+    layout.add (std::make_unique<AudioParameterFloat> (
+        ParameterID { "fDrive", 1 }, "Filter Input Drive (dB)",
+        NormalisableRange<float> (0.0f, 18.0f, 0.1f), 0.0f));
+
     // ---------------- Filter envelope ----------------
     layout.add (std::make_unique<AudioParameterFloat> (ParameterID { "fAttack", 1 },  "Filter Attack",  timeRange, 0.01f));
     layout.add (std::make_unique<AudioParameterFloat> (ParameterID { "fDecay", 1 },   "Filter Decay",   timeRange, 0.4f));
@@ -276,6 +287,9 @@ void WaveForgeProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::M
     p.cutoff          = get ("cutoff");
     p.resonance       = get ("resonance");
     p.filterEnvAmount = get ("fEnvAmt");
+    p.filterSlope     = (int) get ("fSlope");
+    p.filterKeyTrack  = get ("fKeyTrack");
+    p.filterDriveDb   = get ("fDrive");
 
     p.filterEnv.attack  = get ("fAttack");
     p.filterEnv.decay   = get ("fDecay");
