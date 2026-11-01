@@ -105,7 +105,8 @@ void WaveForgeLookAndFeel::drawButtonBackground (juce::Graphics& g, juce::Button
 
 WaveForgeWaveDisplay::WaveForgeWaveDisplay (WaveForgeProcessor& p, const juce::String& parameterID,
                                              const juce::String& name)
-    : processor (p), position (p.apvts.getRawParameterValue (parameterID)), displayName (name)
+    : processor (p), position (p.apvts.getRawParameterValue (parameterID)),
+      positionParameter (p.apvts.getParameter (parameterID)), displayName (name)
 {
     startTimerHz (24);
 }
@@ -113,6 +114,30 @@ WaveForgeWaveDisplay::WaveForgeWaveDisplay (WaveForgeProcessor& p, const juce::S
 void WaveForgeWaveDisplay::timerCallback()
 {
     repaint();
+}
+
+void WaveForgeWaveDisplay::mouseDown (const juce::MouseEvent& event)
+{
+    if (positionParameter == nullptr) return;
+    dragging = true;
+    positionParameter->beginChangeGesture();
+    mouseDrag (event);
+}
+
+void WaveForgeWaveDisplay::mouseDrag (const juce::MouseEvent& event)
+{
+    if (! dragging || positionParameter == nullptr) return;
+    const auto plot = getLocalBounds().toFloat().reduced (14.0f, 12.0f);
+    const float fraction = juce::jlimit (0.0f, 1.0f,
+        (event.position.x - plot.getX()) / juce::jmax (1.0f, plot.getWidth()));
+    positionParameter->setValueNotifyingHost (fraction);
+    repaint();
+}
+
+void WaveForgeWaveDisplay::mouseUp (const juce::MouseEvent&)
+{
+    if (dragging && positionParameter != nullptr) positionParameter->endChangeGesture();
+    dragging = false;
 }
 
 float WaveForgeWaveDisplay::sampleFrame (int frame, float phase) noexcept
@@ -193,6 +218,10 @@ void WaveForgeWaveDisplay::paint (juce::Graphics& g)
     g.drawText (displayName + "  •  " + (blend < 0.03f ? nameA : nameA + "  →  " + nameB),
                 plot.getX(), bounds.getY() + 5.0f, plot.getWidth(), 15.0f,
                 juce::Justification::centredLeft);
+    g.setColour (textMuted);
+    g.setFont (juce::Font (9.0f));
+    g.drawText ("DRAG TO SCAN", plot.getRight() - 100.0f, bounds.getY() + 5.0f,
+                100.0f, 15.0f, juce::Justification::centredRight);
 }
 
 WaveForgeUnisonDisplay::WaveForgeUnisonDisplay (WaveForgeProcessor& p)
@@ -580,6 +609,17 @@ WaveForgeModulationPage::WaveForgeModulationPage (WaveForgeProcessor& p)
         lfoLabels[(size_t) i] = std::move (label);
     }
 
+    matrixTitle = std::make_unique<juce::Label>();
+    matrixTitle->setText ("MODULATION MATRIX", juce::dontSendNotification);
+    matrixTitle->setFont (juce::Font (15.0f, juce::Font::bold));
+    matrixTitle->setColour (juce::Label::textColourId, textMain);
+    content.addAndMakeVisible (*matrixTitle);
+    matrixHint = std::make_unique<juce::Label>();
+    matrixHint->setText ("SOURCE  /  DESTINATION  /  BIPOLAR AMOUNT", juce::dontSendNotification);
+    matrixHint->setFont (juce::Font (10.0f, juce::Font::bold));
+    matrixHint->setColour (juce::Label::textColourId, textMuted);
+    content.addAndMakeVisible (*matrixHint);
+
     for (int i = 0; i < 4; ++i)
     {
         const juce::String pre = "mod" + juce::String (i + 1);
@@ -646,14 +686,19 @@ void WaveForgeModulationPage::resized()
         rateFade[(size_t) (i * 2)]->setBounds (x + 8, 237, half - 16, 27);
         rateFade[(size_t) (i * 2 + 1)]->setBounds (x + 8, 268, half - 16, 27);
     }
+    matrixTitle->setBounds (22, 312, 260, 24);
+    matrixHint->setBounds (290, 313, width - 312, 22);
+    content.cards.clear();
     for (int i = 0; i < 4; ++i)
     {
         const int y = 356 + i * 76;
+        content.cards.push_back (juce::Rectangle<int> (16, y - 7, width - 32, 48));
         routeLabels[(size_t) i]->setBounds (25, y, 95, 32);
         source[(size_t) i]->setBounds (125, y, (width - 170) / 3, 32);
         target[(size_t) i]->setBounds (137 + (width - 170) / 3, y, (width - 170) / 3, 32);
         amount[(size_t) i]->setBounds (149 + 2 * (width - 170) / 3, y, (width - 170) / 3 - 12, 32);
     }
+    content.repaint();
 }
 
 WaveForgeLevelMeter::WaveForgeLevelMeter (WaveForgeProcessor& p) : processor (p)
@@ -987,16 +1032,24 @@ WaveForgeEditor::WaveForgeEditor (WaveForgeProcessor& processor)
 
     tabs.addTab ("MOD", panel, new WaveForgeModulationPage (processor), false);
 
-    tabs.addTab ("FX", panel, new WaveForgeParameterPage (processor, {
-        { "distType", "DISTORTION TYPE" }, { "distDrive", "DRIVE" }, { "distMix", "DIST MIX" },
-        { "chRate", "CHORUS RATE" }, { "chDepth", "CHORUS DEPTH" },
-        { "chFeedback", "CHORUS FEEDBACK" }, { "chMix", "CHORUS MIX" },
-        { "dlSync", "DELAY SYNC" }, { "dlTime", "DELAY TIME" },
-        { "dlFeedback", "DELAY FEEDBACK" }, { "dlTone", "DELAY TONE" },
-        { "dlPing", "PING PONG" }, { "dlMix", "DELAY MIX" },
-        { "rvSize", "REVERB SIZE" }, { "rvDamp", "DAMPING" },
-        { "rvWidth", "WIDTH" }, { "rvMix", "REVERB MIX" }
-    }), false);
+    auto* effects = new juce::TabbedComponent (juce::TabbedButtonBar::TabsAtTop);
+    effects->setTabBarDepth (34);
+    effects->addTab ("DISTORTION", panel, new WaveForgeParameterPage (processor, {
+        { "distType", "TYPE" }, { "distDrive", "DRIVE" }, { "distMix", "MIX" }
+    }), true);
+    effects->addTab ("CHORUS", panel, new WaveForgeParameterPage (processor, {
+        { "chRate", "RATE" }, { "chDepth", "DEPTH" },
+        { "chFeedback", "FEEDBACK" }, { "chMix", "MIX" }
+    }), true);
+    effects->addTab ("DELAY", panel, new WaveForgeParameterPage (processor, {
+        { "dlSync", "SYNC" }, { "dlTime", "TIME" }, { "dlFeedback", "FEEDBACK" },
+        { "dlTone", "TONE" }, { "dlPing", "PING PONG" }, { "dlMix", "MIX" }
+    }), true);
+    effects->addTab ("REVERB", panel, new WaveForgeParameterPage (processor, {
+        { "rvSize", "SIZE" }, { "rvDamp", "DAMPING" },
+        { "rvWidth", "WIDTH" }, { "rvMix", "MIX" }
+    }), true);
+    tabs.addTab ("FX", panel, effects, true);
 
     tabs.addTab ("MASTER", panel, new WaveForgeParameterPage (processor, {
         { "gain", "OUTPUT GAIN" }
