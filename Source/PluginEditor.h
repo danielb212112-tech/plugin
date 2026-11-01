@@ -35,6 +35,7 @@ private:
     WaveForgeProcessor& audioProcessor;
     juce::Label title;
     juce::Label subtitle;
+    juce::ComboBox presetBrowser;
     juce::TextButton savePreset { "SAVE PRESET" };
     juce::TextButton loadPreset { "LOAD PRESET" };
     std::unique_ptr<juce::FileChooser> fileChooser;
