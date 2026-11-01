@@ -342,9 +342,10 @@ void WaveForgeProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::M
         chorusActive = false;
     }
 
-    // 3. Delay (אפשר לסנכרן לטמפו של ה-DAW)
+    // 3. Delay — let the wet mix fade to zero before clearing the
+    // feedback buffer. Instant bypass used to cut delay tails abruptly.
     const float dlMix = get ("dlMix");
-    if (dlMix > 0.0001f)
+    if (dlMix > 0.0001f || delayActive)
     {
         float timeMs = get ("dlTime");
         const int sync = (int) get ("dlSync");
@@ -363,12 +364,9 @@ void WaveForgeProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::M
 
         delay.setParams (timeMs, get ("dlFeedback"), get ("dlTone"), get ("dlPing") > 0.5f, dlMix);
         delay.process (buffer);
-        delayActive = true;
-    }
-    else if (delayActive)
-    {
-        delay.reset();
-        delayActive = false;
+        delayActive = ! delay.isBypassed();
+        if (! delayActive)
+            delay.reset();
     }
 
     // 4. Reverb
