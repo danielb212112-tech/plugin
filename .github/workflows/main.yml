@@ -17,7 +17,7 @@ jobs:
         run: cmake --build build --config Release --parallel
 
       - name: Offline DSP smoke tests
-        run: ctest --test-dir build --config Release --output-on-failure
+        run: ctest --test-dir build -C Release --output-on-failure
 
       - name: Upload VST3
         uses: actions/upload-artifact@v4
