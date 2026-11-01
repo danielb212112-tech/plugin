@@ -41,7 +41,7 @@ private:
     std::atomic<float>* spread = nullptr;
 };
 
-class WaveForgeEnvelopeEditor final : public juce::Component
+class WaveForgeEnvelopeEditor final : public juce::Component, private juce::Timer
 {
 public:
     WaveForgeEnvelopeEditor (WaveForgeProcessor&, const juce::String& prefix, const juce::String& title);
@@ -52,6 +52,7 @@ public:
     void mouseUp (const juce::MouseEvent&) override;
 
 private:
+    void timerCallback() override { repaint(); }
     enum class Handle { none, attack, decay, sustain, release };
     juce::Point<float> getHandlePosition (Handle) const;
     void updateParameter (juce::RangedAudioParameter*, float);
@@ -72,6 +73,70 @@ public:
     std::vector<juce::Rectangle<int>> cards;
 };
 
+
+class WaveForgeFilterDisplay final : public juce::Component, private juce::Timer
+{
+public:
+    explicit WaveForgeFilterDisplay (WaveForgeProcessor&);
+    void paint (juce::Graphics&) override;
+private:
+    void timerCallback() override { repaint(); }
+    std::atomic<float>* type = nullptr;
+    std::atomic<float>* cutoff = nullptr;
+    std::atomic<float>* resonance = nullptr;
+};
+
+class WaveForgeLfoDisplay final : public juce::Component, private juce::Timer
+{
+public:
+    WaveForgeLfoDisplay (WaveForgeProcessor&, int index);
+    void paint (juce::Graphics&) override;
+private:
+    void timerCallback() override { repaint(); }
+    int number = 1;
+    std::atomic<float>* shape = nullptr;
+    std::atomic<float>* rate = nullptr;
+};
+
+class WaveForgeModulationPage final : public juce::Component
+{
+public:
+    explicit WaveForgeModulationPage (WaveForgeProcessor&);
+    ~WaveForgeModulationPage() override;
+    void paint (juce::Graphics&) override;
+    void resized() override;
+private:
+    using ComboAttachment = juce::AudioProcessorValueTreeState::ComboBoxAttachment;
+    using SliderAttachment = juce::AudioProcessorValueTreeState::SliderAttachment;
+    WaveForgeLookAndFeel lookAndFeel;
+    WaveForgePageContent content;
+    juce::Viewport viewport;
+    std::array<std::unique_ptr<WaveForgeLfoDisplay>, 2> lfoDisplays;
+    std::array<std::unique_ptr<juce::Label>, 2> lfoLabels;
+    std::array<std::unique_ptr<juce::Label>, 4> routeLabels;
+    std::array<std::unique_ptr<juce::Label>, 4> routeReadouts;
+    std::array<std::unique_ptr<juce::ComboBox>, 2> shape;
+    std::array<std::unique_ptr<juce::Slider>, 4> rateFade;
+    std::array<std::unique_ptr<juce::ToggleButton>, 2> sync;
+    std::array<std::unique_ptr<juce::ComboBox>, 4> source;
+    std::array<std::unique_ptr<juce::ComboBox>, 4> target;
+    std::array<std::unique_ptr<juce::Slider>, 4> amount;
+    std::vector<std::unique_ptr<ComboAttachment>> comboAttachments;
+    std::vector<std::unique_ptr<SliderAttachment>> sliderAttachments;
+    std::vector<std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment>> buttonAttachments;
+};
+
+class WaveForgeLevelMeter final : public juce::Component, private juce::Timer
+{
+public:
+    explicit WaveForgeLevelMeter (WaveForgeProcessor&);
+    void paint (juce::Graphics&) override;
+private:
+    void timerCallback() override;
+    WaveForgeProcessor& processor;
+    float smoothLeft = 0.0f, smoothRight = 0.0f;
+};
+
 class WaveForgeParameterPage final : public juce::Component
 {
 public:
@@ -82,7 +147,7 @@ public:
     WaveForgeParameterPage (WaveForgeProcessor&,
                             std::initializer_list<std::pair<const char*, const char*>>,
                             bool showWaveform = false,
-                            const juce::String& envelopePrefix = {});
+                            const juce::String& envelopePrefix = {}, bool showOutputMeter = false);
     void paint (juce::Graphics&) override;
     void resized() override;
 
@@ -95,6 +160,8 @@ private:
     std::unique_ptr<WaveForgeWaveDisplay> waveform2;
     std::unique_ptr<WaveForgeUnisonDisplay> unisonDisplay;
     std::unique_ptr<WaveForgeEnvelopeEditor> envelopeEditor;
+    std::unique_ptr<WaveForgeFilterDisplay> filterDisplay;
+    std::unique_ptr<WaveForgeLevelMeter> levelMeter;
     std::vector<std::unique_ptr<juce::Component>> controls;
     std::vector<std::unique_ptr<juce::Label>> labels;
     std::vector<std::unique_ptr<SliderAttachment>> sliderAttachments;
