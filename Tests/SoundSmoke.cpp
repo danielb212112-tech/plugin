@@ -1,5 +1,6 @@
 #include <JuceHeader.h>
 #include "../Source/Voice.h"
+#include "../Source/Effects.h"
 
 #include <cmath>
 #include <iostream>
@@ -141,9 +142,132 @@ static bool testVoiceRendering()
     return true;
 }
 
+// Compare spectral aliasing against the old sample-rate clipper. At 48 kHz,
+// clipping a 7 kHz sinusoid creates a strong 49 kHz harmonic that folds down
+// to 1 kHz. With x4 oversampling the decimator should largely remove it.
+static bool testOversampledDistortion()
+{
+    constexpr double sr = 48000.0;
+    constexpr int blockSize = 256;
+    constexpr int total = 9600;
+    constexpr int analyzed = 4800;
+    constexpr double inputHz = 7000.0;
+    constexpr double aliasHz = 1000.0;
+    const double twoPi = juce::MathConstants<double>::twoPi;
+    const float drive = juce::Decibels::decibelsToGain (30.0f);
+
+    DistortionFx distortion;
+    distortion.prepare (sr, blockSize);
+    distortion.setParams (1, 30.0f, 1.0f); // hard clip, strong drive, wet
+    if (distortion.getLatencySamples() <= 0)
+    {
+        std::cerr << "Oversampling latency was not reported\n";
+        return false;
+    }
+
+    double legacyCos = 0.0, legacySin = 0.0, oversampledCos = 0.0, oversampledSin = 0.0;
+    juce::AudioBuffer<float> block (2, blockSize);
+    for (int offset = 0; offset < total; offset += blockSize)
+    {
+        const int count = juce::jmin (blockSize, total - offset);
+        juce::AudioBuffer<float> working (2, count);
+        for (int i = 0; i < count; ++i)
+        {
+            const int n = offset + i;
+            const float input = 0.8f * std::sin ((float) (twoPi * inputHz * n / sr));
+            working.setSample (0, i, input);
+            working.setSample (1, i, input);
+        }
+
+        distortion.process (working);
+        for (int i = 0; i < count; ++i)
+        {
+            const int n = offset + i;
+            const float value = working.getSample (0, i);
+            if (! std::isfinite (value) || std::abs (value) > 2.0f)
+            {
+                std::cerr << "Non-finite or excessive oversampled distortion output\n";
+                return false;
+            }
+
+            if (n >= total - analyzed)
+            {
+                const double phase = twoPi * aliasHz * n / sr;
+                const float input = 0.8f * std::sin ((float) (twoPi * inputHz * n / sr));
+                const float oldClip = juce::jlimit (-1.0f, 1.0f, input * drive);
+                const double cs = std::cos (phase), sn = std::sin (phase);
+                legacyCos += oldClip * cs;
+                legacySin += oldClip * sn;
+                oversampledCos += value * cs;
+                oversampledSin += value * sn;
+            }
+        }
+    }
+
+    const double oldAlias = std::hypot (legacyCos, legacySin);
+    const double newAlias = std::hypot (oversampledCos, oversampledSin);
+    std::cout << "Alias energy at 1 kHz: baseline=" << oldAlias
+              << " oversampled=" << newAlias << "\n";
+    if (oldAlias < 1.0 || newAlias >= oldAlias * 0.7)
+    {
+        std::cerr << "4x distortion did not sufficiently suppress the folded harmonic\n";
+        return false;
+    }
+
+    // 0% wet must remain an exact latency-compensated dry path. This ensures
+    // that automation between dry/wet does not create comb filtering.
+    distortion.reset();
+    distortion.setParams (0, 12.0f, 0.0f);
+    const int delay = distortion.getLatencySamples();
+    std::vector<float> reference ((size_t) total, 0.0f);
+    for (int offset = 0; offset < total; offset += blockSize)
+    {
+        const int count = juce::jmin (blockSize, total - offset);
+        juce::AudioBuffer<float> working (2, count);
+        for (int i = 0; i < count; ++i)
+        {
+            const int n = offset + i;
+            reference[(size_t) n] = 0.35f * std::sin ((float) (twoPi * 349.0 * n / sr));
+            working.setSample (0, i, reference[(size_t) n]);
+            working.setSample (1, i, reference[(size_t) n]);
+        }
+        distortion.process (working);
+        for (int i = 0; i < count; ++i)
+        {
+            const int n = offset + i;
+            const float expected = n >= delay ? reference[(size_t) (n - delay)] : 0.0f;
+            if (std::abs (working.getSample (0, i) - expected) > 1.0e-5f
+                || std::abs (working.getSample (1, i) - expected) > 1.0e-5f)
+            {
+                std::cerr << "Distortion dry/latency alignment failed at sample " << n << "\n";
+                return false;
+            }
+        }
+    }
+
+    // Exercise all nonlinear modes, changing drive and wet mix mid-stream.
+    for (int mode = 0; mode < 4; ++mode)
+    {
+        distortion.setParams (mode, 24.0f + mode, 0.5f);
+        block.clear();
+        for (int i = 0; i < blockSize; ++i)
+        {
+            block.setSample (0, i, 0.5f);
+            block.setSample (1, i, -0.5f);
+        }
+        distortion.process (block);
+        for (int channel = 0; channel < 2; ++channel)
+            for (int i = 0; i < blockSize; ++i)
+                if (! std::isfinite (block.getSample (channel, i)))
+                    return false;
+    }
+    return true;
+}
+
 int main()
 {
-    if (! testWavetableContinuity() || ! testVoiceRendering())
+    if (! testWavetableContinuity() || ! testVoiceRendering()
+        || ! testOversampledDistortion())
         return 1;
     std::cout << "WaveForge sound smoke tests passed.\n";
     return 0;
