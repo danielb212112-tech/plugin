@@ -273,7 +273,7 @@ static bool testAdvancedFilter()
 
     // Measure actual voice rendering, not a mocked filter approximation.
     // Settled RMS over several blocks excludes ADSR start transients.
-    auto rmsFor = [&bank] (int midiNote, int filterType, int slope,
+    auto rmsFor = [&bank, sampleRate, blockSize] (int midiNote, int filterType, int slope,
                            float keyTrack, float driveDb, float cutoff)
     {
         juce::Synthesiser synth;
