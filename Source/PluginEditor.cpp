@@ -82,7 +82,7 @@ void WaveForgeParameterPage::resized()
 }
 
 WaveForgeEditor::WaveForgeEditor (WaveForgeProcessor& processor)
-    : AudioProcessorEditor (&processor)
+    : AudioProcessorEditor (&processor), audioProcessor (processor)
 {
     title.setText ("WAVEFORGE", juce::dontSendNotification);
     title.setFont (juce::Font (25.0f, juce::Font::bold));
@@ -92,7 +92,49 @@ WaveForgeEditor::WaveForgeEditor (WaveForgeProcessor& processor)
     subtitle.setColour (juce::Label::textColourId, juce::Colour (0xff7f91a8));
     addAndMakeVisible (title);
     addAndMakeVisible (subtitle);
+    addAndMakeVisible (savePreset);
+    addAndMakeVisible (loadPreset);
     addAndMakeVisible (tabs);
+
+    savePreset.setColour (juce::TextButton::buttonColourId, juce::Colour (0xff1b9f98));
+    savePreset.setColour (juce::TextButton::textColourOffId, juce::Colour (0xff08121c));
+    loadPreset.setColour (juce::TextButton::buttonColourId, juce::Colour (0xff202c3d));
+    loadPreset.setColour (juce::TextButton::textColourOffId, juce::Colour (0xffe8eef8));
+
+    savePreset.onClick = [this]
+    {
+        fileChooser = std::make_unique<juce::FileChooser> (
+            "Save WaveForge Preset", juce::File::getSpecialLocation (juce::File::userDocumentsDirectory),
+            "*.wfpreset");
+        fileChooser->launchAsync (juce::FileBrowserComponent::saveMode
+                                  | juce::FileBrowserComponent::canSelectFiles,
+            [this] (const juce::FileChooser& chooser)
+            {
+                const auto file = chooser.getResult();
+                if (file == juce::File{})
+                    return;
+                if (auto xml = audioProcessor.apvts.copyState().createXml())
+                    xml->writeTo (file);
+            });
+    };
+
+    loadPreset.onClick = [this]
+    {
+        fileChooser = std::make_unique<juce::FileChooser> (
+            "Load WaveForge Preset", juce::File::getSpecialLocation (juce::File::userDocumentsDirectory),
+            "*.wfpreset");
+        fileChooser->launchAsync (juce::FileBrowserComponent::openMode
+                                  | juce::FileBrowserComponent::canSelectFiles,
+            [this] (const juce::FileChooser& chooser)
+            {
+                const auto file = chooser.getResult();
+                if (file == juce::File{})
+                    return;
+                std::unique_ptr<juce::XmlElement> xml (juce::XmlDocument::parse (file));
+                if (xml != nullptr && xml->hasTagName (audioProcessor.apvts.state.getType()))
+                    audioProcessor.apvts.replaceState (juce::ValueTree::fromXml (*xml));
+            });
+    };
 
     tabs.addTab ("OSC", juce::Colour (0xff111824),
         new WaveForgeParameterPage (processor, {
@@ -155,8 +197,11 @@ void WaveForgeEditor::paint (juce::Graphics& g)
 void WaveForgeEditor::resized()
 {
     auto area = getLocalBounds().reduced (18);
-    auto header = area.removeFromTop (58);
-    title.setBounds (header.removeFromTop (32));
+    auto header = area.removeFromTop (66);
+    auto buttons = header.removeFromRight (230);
+    savePreset.setBounds (buttons.removeFromLeft (108).reduced (3, 10));
+    loadPreset.setBounds (buttons.removeFromLeft (108).reduced (3, 10));
+    title.setBounds (header.removeFromTop (34));
     subtitle.setBounds (header);
     tabs.setBounds (area);
 }
