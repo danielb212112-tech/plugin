@@ -89,6 +89,7 @@ private:
     std::atomic<float>* type = nullptr;
     std::atomic<float>* cutoff = nullptr;
     std::atomic<float>* resonance = nullptr;
+    std::atomic<float>* slope = nullptr;
 };
 
 class WaveForgeLfoDisplay final : public juce::Component, private juce::Timer
