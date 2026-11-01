@@ -6,57 +6,181 @@
 #include <vector>
 #include <cmath>
 
-// Lightweight zero-latency distortion and stereo feedback delay used by WaveForge.
-// All memory is allocated in prepare(); process() performs no allocations.
+// 4x high-quality FIR oversampled distortion.
+// The oversampler is ALWAYS in the signal path, including when Mix = 0.
+// This keeps its latency constant across bypass changes and allows the DAW
+// to compensate accurately. The dry path is delayed by the same amount.
+//
+// No dynamic memory allocation occurs on the audio thread. All scratch space,
+// filters and delay lines are prepared before playback.
 class DistortionFx
 {
 public:
-    void prepare (double, int) {}
-    int getLatencySamples() const noexcept { return 0; }
+    static constexpr int oversamplingFactor = 4;
+
+    void prepare (double sampleRate, int maximumBlockSize)
+    {
+        maxBlockSize = juce::jmax (1, maximumBlockSize);
+        oversampling.initProcessing ((size_t) maxBlockSize);
+        oversampling.reset();
+        latencySamples = juce::jmax (0, juce::roundToInt (oversampling.getLatencyInSamples()));
+
+        dryScratch.setSize (2, maxBlockSize, false, false, true);
+        dryScratch.clear();
+
+        const size_t delaySize = (size_t) juce::jmax (1, latencySamples);
+        for (auto& channel : dryDelay)
+            channel.assign (delaySize, 0.0f);
+        dryWritePosition = 0;
+
+        driveValues.resize ((size_t) maxBlockSize * oversamplingFactor);
+        typeBlends.resize ((size_t) maxBlockSize * oversamplingFactor);
+
+        const double safeRate = juce::jmax (1.0, sampleRate);
+        driveSmooth.reset (safeRate * oversamplingFactor, 0.006);
+        driveSmooth.setCurrentAndTargetValue (driveTarget);
+        mixSmooth.reset (safeRate, 0.012);
+        mixSmooth.setCurrentAndTargetValue (0.0f);
+        typeBlend.reset (safeRate * oversamplingFactor, 0.006);
+        typeBlend.setCurrentAndTargetValue (1.0f);
+        previousType = type;
+        ready = true;
+    }
+
+    int getLatencySamples() const noexcept { return latencySamples; }
+
+    void reset() noexcept
+    {
+        oversampling.reset();
+        for (auto& channel : dryDelay)
+            std::fill (channel.begin(), channel.end(), 0.0f);
+        dryWritePosition = 0;
+        driveSmooth.setCurrentAndTargetValue (driveTarget);
+        mixSmooth.setCurrentAndTargetValue (0.0f);
+        typeBlend.setCurrentAndTargetValue (1.0f);
+        previousType = type;
+    }
 
     void setParams (int newType, float driveDb, float newMix) noexcept
     {
-        type = juce::jlimit (0, 3, newType);
-        drive = juce::Decibels::decibelsToGain (juce::jlimit (0.0f, 36.0f, driveDb));
-        mix = juce::jlimit (0.0f, 1.0f, newMix);
+        const int requestedType = juce::jlimit (0, 3, newType);
+        if (requestedType != type)
+        {
+            previousType = type;
+            type = requestedType;
+            typeBlend.setCurrentAndTargetValue (0.0f);
+            typeBlend.setTargetValue (1.0f);
+        }
+
+        driveTarget = juce::Decibels::decibelsToGain (
+            juce::jlimit (0.0f, 36.0f, driveDb));
+        driveSmooth.setTargetValue (driveTarget);
+        mixSmooth.setTargetValue (juce::jlimit (0.0f, 1.0f, newMix));
     }
 
     void process (juce::AudioBuffer<float>& buffer) noexcept
     {
-        const int channels = buffer.getNumChannels();
-        const int samples = buffer.getNumSamples();
-        for (int ch = 0; ch < channels; ++ch)
-        {
-            auto* data = buffer.getWritePointer (ch);
-            for (int i = 0; i < samples; ++i)
-            {
-                const float dry = data[i];
-                const float x = dry * drive;
-                float wet = x;
+        // The synth's bus is always stereo. Reject unprepared/mismatched
+        // input safely instead of resizing any buffer inside process().
+        if (! ready || buffer.getNumChannels() != 2 || buffer.getNumSamples() == 0)
+            return;
 
-                switch (type)
+        juce::dsp::AudioBlock<float> whole (buffer);
+        const int totalSamples = buffer.getNumSamples();
+
+        for (int start = 0; start < totalSamples; start += maxBlockSize)
+        {
+            const int count = juce::jmin (maxBlockSize, totalSamples - start);
+            for (int channel = 0; channel < 2; ++channel)
+                dryScratch.copyFrom (channel, 0, buffer, channel, start, count);
+
+            auto block = whole.getSubBlock ((size_t) start, (size_t) count);
+            auto upsampled = oversampling.processSamplesUp (block);
+            const size_t highRateSamples = upsampled.getNumSamples();
+
+            for (size_t i = 0; i < highRateSamples; ++i)
+            {
+                driveValues[i] = driveSmooth.getNextValue();
+                typeBlends[i] = typeBlend.getNextValue();
+            }
+
+            for (size_t channel = 0; channel < 2; ++channel)
+            {
+                float* samples = upsampled.getChannelPointer (channel);
+                for (size_t i = 0; i < highRateSamples; ++i)
                 {
-                    case 0: wet = std::tanh (x); break;                         // Soft clip
-                    case 1: wet = juce::jlimit (-1.0f, 1.0f, x); break;         // Hard clip
-                    case 2:
-                    {
-                        float folded = std::fmod (x + 1.0f, 4.0f);
-                        if (folded < 0.0f) folded += 4.0f;
-                        wet = folded < 2.0f ? folded - 1.0f : 3.0f - folded;
-                        break;
-                    }
-                    case 3: wet = std::sin (x * juce::MathConstants<float>::pi * 0.5f); break;
-                    default: break;
+                    const float x = samples[i] * driveValues[i];
+                    const float wet = saturate (type, x);
+                    const float blend = typeBlends[i];
+                    samples[i] = blend >= 1.0f
+                        ? wet
+                        : saturate (previousType, x)
+                          + blend * (wet - saturate (previousType, x));
+                }
+            }
+
+            oversampling.processSamplesDown (block);
+
+            for (int i = 0; i < count; ++i)
+            {
+                const float mix = mixSmooth.getNextValue();
+                for (int channel = 0; channel < 2; ++channel)
+                {
+                    const float dry = dryScratch.getSample (channel, i);
+                    const float delayed = latencySamples > 0
+                        ? dryDelay[(size_t) channel][dryWritePosition] : dry;
+
+                    if (latencySamples > 0)
+                        dryDelay[(size_t) channel][dryWritePosition] = dry;
+
+                    const float wet = buffer.getSample (channel, start + i);
+                    buffer.setSample (channel, start + i,
+                                      delayed + mix * (wet - delayed));
                 }
 
-                data[i] = dry + mix * (wet - dry);
+                if (latencySamples > 0)
+                    dryWritePosition = (dryWritePosition + 1) % dryDelay[0].size();
             }
         }
     }
 
 private:
-    int type = 0;
-    float drive = 1.0f, mix = 0.0f;
+    static float saturate (int mode, float x) noexcept
+    {
+        switch (mode)
+        {
+            case 0: return std::tanh (x);
+            case 1: return juce::jlimit (-1.0f, 1.0f, x);
+            case 2:
+            {
+                float folded = std::fmod (x + 1.0f, 4.0f);
+                if (folded < 0.0f) folded += 4.0f;
+                return folded < 2.0f ? folded - 1.0f : 3.0f - folded;
+            }
+            case 3: return std::sin (x * juce::MathConstants<float>::halfPi);
+            default: return x;
+        }
+    }
+
+    // Two FIR half-band stages provide x4 oversampling with linear phase.
+    // Integer-latency mode compensates the FIR's fractional sample delay.
+    juce::dsp::Oversampling<float> oversampling {
+        2, 2, juce::dsp::Oversampling<float>::filterHalfBandFIREquiripple,
+        true, true
+    };
+
+    juce::AudioBuffer<float> dryScratch;
+    std::array<std::vector<float>, 2> dryDelay;
+    std::vector<float> driveValues, typeBlends;
+
+    juce::SmoothedValue<float, juce::ValueSmoothingTypes::Multiplicative> driveSmooth;
+    juce::SmoothedValue<float> mixSmooth, typeBlend;
+
+    int maxBlockSize = 1, latencySamples = 0;
+    int type = 0, previousType = 0;
+    float driveTarget = 1.0f;
+    size_t dryWritePosition = 0;
+    bool ready = false;
 };
 
 class StereoDelay
