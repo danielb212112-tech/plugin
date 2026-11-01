@@ -36,15 +36,71 @@ public:
         return k;
     }
 
-    // קריאה עם אינטרפולציה לינארית. phase בטווח [0,1)
-    float read (int frame, int level, float phase) const
+    // Mip crossfades finish BEFORE a brighter level becomes unsafe at Nyquist.
+    // This prevents stepping between spectral bands on pitch bends or vibrato.
+    struct MipSelection
+    {
+        int finer = 0;
+        int darker = 0;
+        float blend = 0.0f;
+    };
+
+    static MipSelection selectMip (double frequency, double sampleRate) noexcept
+    {
+        if (sampleRate <= 0.0 || ! std::isfinite (frequency))
+            return { numLevels - 1, numLevels - 1, 0.0f };
+
+        const double f = juce::jmax (1.0, std::abs (frequency));
+        const int safeLevel = levelForFrequency (f, sampleRate);
+        if (safeLevel >= numLevels - 1)
+            return { numLevels - 1, numLevels - 1, 0.0f };
+
+        const int harmonics = maxHarmonics >> safeLevel;
+        const double transitionEnd = sampleRate * 0.5 / (double) harmonics;
+        const double transitionStart = transitionEnd * 0.75;
+        if (f <= transitionStart)
+            return { safeLevel, safeLevel, 0.0f };
+
+        const float t = juce::jlimit (0.0f, 1.0f,
+                                     (float) ((f - transitionStart) / (transitionEnd - transitionStart)));
+        const float smooth = t * t * (3.0f - 2.0f * t);
+        return { safeLevel, safeLevel + 1, smooth };
+    }
+
+    // Lookup with wrapped four-point cubic interpolation (smoother high notes
+    // than linear interpolation, with no allocations on the audio thread).
+    float read (int frame, int level, float phase) const noexcept
     {
         const float* t = tables[(size_t) frame][(size_t) level].data();
-        const float idx = phase * (float) tableSize;
-        const int   i0  = (int) idx;
-        const float f   = idx - (float) i0;
-        const int   i   = i0 & (tableSize - 1);
-        return t[i] + f * (t[i + 1] - t[i]);
+        const float wrapped = phase - std::floor (phase);
+        const float index = wrapped * (float) tableSize;
+        const int base = (int) index;
+        const float x = index - (float) base;
+        const int mask = tableSize - 1;
+        const float y0 = t[(base - 1) & mask];
+        const float y1 = t[base & mask];
+        const float y2 = t[(base + 1) & mask];
+        const float y3 = t[(base + 2) & mask];
+        const float a = -0.5f * y0 + 1.5f * y1 - 1.5f * y2 + 0.5f * y3;
+        const float b = y0 - 2.5f * y1 + 2.0f * y2 - 0.5f * y3;
+        const float c = -0.5f * y0 + 0.5f * y2;
+        return ((a * x + b) * x + c) * x + y1;
+    }
+
+    float readMorph (int frame, float frameBlend, const MipSelection& mip, float phase) const noexcept
+    {
+        const float first = read (frame, mip.finer, phase);
+        const float frameFine = frameBlend > 0.00001f
+            ? first + frameBlend * (read (frame + 1, mip.finer, phase) - first)
+            : first;
+        if (mip.blend <= 0.00001f)
+            return frameFine;
+
+        const float second = read (frame, mip.darker, phase);
+        const float frameDark = frameBlend > 0.00001f
+            ? second + frameBlend * (read (frame + 1, mip.darker, phase) - second)
+            : second;
+        return frameFine + mip.blend * (frameDark - frameFine);
     }
 
 private:
@@ -114,6 +170,9 @@ private:
 
         for (int f = 0; f < numFrames; ++f)
         {
+            // Preserve the spectral balance: ALL mip levels of a frame use
+            // the same peak normalization, measured at the fullest level.
+            float referencePeak = 1.0f;
             for (int k = 0; k < numLevels; ++k)
             {
                 auto& t = tables[(size_t) f][(size_t) k];
@@ -136,9 +195,11 @@ private:
                 for (int n = 0; n < tableSize; ++n)
                     peak = juce::jmax (peak, std::abs (t[(size_t) n]));
 
-                if (peak > 1.0e-6f)
-                    for (int n = 0; n < tableSize; ++n)
-                        t[(size_t) n] /= peak;
+                if (k == 0)
+                    referencePeak = juce::jmax (1.0e-6f, peak);
+
+                for (int n = 0; n < tableSize; ++n)
+                    t[(size_t) n] /= referencePeak;
 
                 t[(size_t) tableSize] = t[0]; // נקודת שמירה לאינטרפולציה
             }
