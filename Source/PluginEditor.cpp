@@ -570,10 +570,7 @@ void WaveForgeLfoDisplay::paint (juce::Graphics& g)
 
 WaveForgeModulationPage::WaveForgeModulationPage (WaveForgeProcessor& p)
 {
-    addAndMakeVisible (viewport);
-    viewport.setViewedComponent (&content, false);
-    viewport.setScrollBarsShown (true, false);
-    viewport.setScrollBarThickness (8);
+    addAndMakeVisible (content);
 
     for (int i = 0; i < 2; ++i)
     {
@@ -606,7 +603,7 @@ WaveForgeModulationPage::WaveForgeModulationPage (WaveForgeProcessor& p)
         content.addAndMakeVisible (*button);
         sync[(size_t) i] = std::move (button);
         auto label = std::make_unique<juce::Label>();
-        label->setText ("RATE                                          FADE IN", juce::dontSendNotification);
+        label->setText ("RATE (TOP)  /  FADE-IN (BOTTOM)", juce::dontSendNotification);
         label->setColour (juce::Label::textColourId, textMuted);
         label->setFont (juce::Font (9.0f, juce::Font::bold));
         content.addAndMakeVisible (*label);
@@ -676,31 +673,57 @@ void WaveForgeModulationPage::paint (juce::Graphics& g)
 
 void WaveForgeModulationPage::resized()
 {
-    viewport.setBounds (getLocalBounds());
-    const int width = juce::jmax (680, viewport.getWidth() - 12);
-    content.setSize (width, juce::jmax (viewport.getHeight(), 694));
-    const int half = (width - 44) / 2;
+    // Serum-style single-screen layout: every LFO and every route remains visible.
+    // No virtual content size / scrollbars; everything reflows with the editor.
+    content.setBounds (getLocalBounds());
+    const int width = content.getWidth();
+    const int height = content.getHeight();
+    constexpr int margin = 14;
+    constexpr int gap = 10;
+    const int half = (width - 2 * margin - gap) / 2;
+    const int displayHeight = juce::jlimit (94, 134, height / 5);
+    const int shapeY = margin + displayHeight + 7;
+    const int rateY = shapeY + 51;
+    const int fadeY = rateY + 29;
+    const int matrixHeadingY = fadeY + 37;
+    const int routeStart = matrixHeadingY + 32;
+    const int routeStep = juce::jmax (46, (height - routeStart - margin) / 4);
+    const int routeControlHeight = juce::jmin (34, routeStep - 11);
+
     for (int i = 0; i < 2; ++i)
     {
-        const int x = 16 + i * (half + 12);
-        lfoDisplays[(size_t) i]->setBounds (x, 12, half, 158);
-        shape[(size_t) i]->setBounds (x + 10, 178, half / 2 - 17, 30);
-        sync[(size_t) i]->setBounds (x + half / 2 + 5, 179, half / 2 - 15, 28);
-        lfoLabels[(size_t) i]->setBounds (x + 10, 216, half - 20, 16);
-        rateFade[(size_t) (i * 2)]->setBounds (x + 8, 237, half - 16, 27);
-        rateFade[(size_t) (i * 2 + 1)]->setBounds (x + 8, 268, half - 16, 27);
+        const int x = margin + i * (half + gap);
+        lfoDisplays[(size_t) i]->setBounds (x, margin, half, displayHeight);
+        shape[(size_t) i]->setBounds (x + 8, shapeY, half / 2 - 14, 29);
+        sync[(size_t) i]->setBounds (x + half / 2 + 7, shapeY, half / 2 - 15, 29);
+        lfoLabels[(size_t) i]->setBounds (x + 10, shapeY + 31, half - 20, 18);
+        rateFade[(size_t) (i * 2)]->setBounds (x + 7, rateY, half - 14, 27);
+        rateFade[(size_t) (i * 2 + 1)]->setBounds (x + 7, fadeY, half - 14, 27);
     }
-    matrixTitle->setBounds (22, 312, 260, 24);
-    matrixHint->setBounds (290, 313, width - 312, 22);
+
+    matrixTitle->setBounds (margin + 8, matrixHeadingY, 238, 25);
+    matrixHint->setBounds (margin + 246, matrixHeadingY + 2,
+                           juce::jmax (1, width - margin * 2 - 246), 21);
+
+    const int labelWidth = 92;
+    const int controlGap = 12;
+    const int usable = width - margin * 2 - labelWidth - controlGap * 3;
+    const int sourceWidth = usable * 30 / 100;
+    const int targetWidth = usable * 30 / 100;
+    const int amountWidth = usable - sourceWidth - targetWidth;
     content.cards.clear();
     for (int i = 0; i < 4; ++i)
     {
-        const int y = 356 + i * 76;
-        content.cards.push_back (juce::Rectangle<int> (16, y - 7, width - 32, 48));
-        routeLabels[(size_t) i]->setBounds (25, y, 95, 32);
-        source[(size_t) i]->setBounds (125, y, (width - 170) / 3, 32);
-        target[(size_t) i]->setBounds (137 + (width - 170) / 3, y, (width - 170) / 3, 32);
-        amount[(size_t) i]->setBounds (149 + 2 * (width - 170) / 3, y, (width - 170) / 3 - 12, 32);
+        const int y = routeStart + i * routeStep;
+        const int controlY = y + (routeStep - routeControlHeight) / 2 - 1;
+        content.cards.push_back ({ margin, y + 2, width - 2 * margin, routeStep - 5 });
+        routeLabels[(size_t) i]->setBounds (margin + 10, controlY, labelWidth - 10, routeControlHeight);
+        const int sourceX = margin + labelWidth + controlGap;
+        source[(size_t) i]->setBounds (sourceX, controlY, sourceWidth, routeControlHeight);
+        const int targetX = sourceX + sourceWidth + controlGap;
+        target[(size_t) i]->setBounds (targetX, controlY, targetWidth, routeControlHeight);
+        const int amountX = targetX + targetWidth + controlGap;
+        amount[(size_t) i]->setBounds (amountX, controlY, amountWidth, routeControlHeight);
     }
     content.repaint();
 }
@@ -767,10 +790,7 @@ WaveForgeParameterPage::WaveForgeParameterPage (
     bool showWaveform, const juce::String& envelopePrefix, bool showOutputMeter)
     : audioProcessor (processor)
 {
-    addAndMakeVisible (viewport);
-    viewport.setViewedComponent (&content, false);
-    viewport.setScrollBarsShown (true, false);
-    viewport.setScrollBarThickness (8);
+    addAndMakeVisible (content);
 
     if (showWaveform)
     {
@@ -858,50 +878,82 @@ void WaveForgeParameterPage::paint (juce::Graphics& g)
 
 void WaveForgeParameterPage::resized()
 {
-    viewport.setBounds (getLocalBounds());
-    const int width = juce::jmax (1, viewport.getWidth() - 12);
-    constexpr int columns = 4;
-    constexpr int cellHeight = 126;
+    // All panels and controls fit inside the visible page at every supported
+    // editor size. The previous four-column/126px cards caused OSC scrolling.
+    content.setBounds (getLocalBounds());
+    const int width = content.getWidth();
+    const int height = content.getHeight();
+    constexpr int margin = 14;
     constexpr int gap = 8;
-    const int cellWidth = (width - 32 - gap * (columns - 1)) / columns;
-    const int top = waveform != nullptr ? 394 : (filterDisplay != nullptr ? 354 : (levelMeter != nullptr ? 166 : (envelopeEditor != nullptr ? 166 : 14)));
-    const int rows = (int) (controls.size() + (size_t) columns - 1) / columns;
-    const int totalHeight = top + rows * (cellHeight + gap) + 14;
-    content.setSize (width, juce::jmax (viewport.getHeight(), totalHeight));
-    content.cards.clear();
+    const int count = (int) controls.size();
+    const int columns = waveform != nullptr ? 5 : (count == 6 ? 3 : juce::jmax (1, juce::jmin (4, count)));
+    const int rows = (count + columns - 1) / columns;
+    const int cellWidth = juce::jmax (1, (width - 2 * margin - gap * (columns - 1)) / columns);
+    int top = margin;
+    int cardHeight = 130;
 
     if (waveform != nullptr)
     {
-        const int displayGap = 12;
-        const int displayWidth = (width - 32 - displayGap) / 2;
-        waveform->setBounds (16, 12, displayWidth, 138);
+        const int waveHeight = juce::jlimit (98, 132, height / 5);
+        const int unisonHeight = juce::jlimit (65, 78, height / 8);
+        const int envelopeHeight = juce::jlimit (98, 118, height / 5);
+        const int displayWidth = (width - 2 * margin - gap) / 2;
+        waveform->setBounds (margin, margin, displayWidth, waveHeight);
         if (waveform2 != nullptr)
-            waveform2->setBounds (16 + displayWidth + displayGap, 12, displayWidth, 138);
+            waveform2->setBounds (margin + displayWidth + gap, margin, displayWidth, waveHeight);
         if (unisonDisplay != nullptr)
-            unisonDisplay->setBounds (16, 158, width - 32, 82);
+            unisonDisplay->setBounds (margin, margin + waveHeight + gap,
+                                     width - 2 * margin, unisonHeight);
+        if (envelopeEditor != nullptr)
+            envelopeEditor->setBounds (margin, margin + waveHeight + gap + unisonHeight + gap,
+                                       width - 2 * margin, envelopeHeight);
+        top = margin + waveHeight + gap + unisonHeight + gap + envelopeHeight + gap;
+        cardHeight = (height - top - margin - gap * (rows - 1)) / rows;
+    }
+    else if (filterDisplay != nullptr)
+    {
+        // Filter response + ADSR side by side, not stacked.
+        const int previewHeight = juce::jlimit (185, 272, height / 2);
+        const int panelWidth = (width - 2 * margin - gap) / 2;
+        filterDisplay->setBounds (margin, margin, panelWidth, previewHeight);
+        if (envelopeEditor != nullptr)
+            envelopeEditor->setBounds (margin + panelWidth + gap, margin,
+                                       panelWidth, previewHeight);
+        top = margin + previewHeight + 22;
+        cardHeight = juce::jmin (150, height - top - margin);
+    }
+    else if (levelMeter != nullptr)
+    {
+        const int meterHeight = juce::jlimit (140, 192, height / 3);
+        levelMeter->setBounds (margin, margin, width - 2 * margin, meterHeight);
+        top = margin + meterHeight + 28;
+        cardHeight = juce::jmin (155, height - top - margin);
+    }
+    else
+    {
+        // FX modules occupy a centered one- or two-row dashboard.
+        cardHeight = juce::jlimit (115, 152, height / (rows == 1 ? 3 : 4));
+        top = juce::jmax (margin, (height - rows * cardHeight - (rows - 1) * gap) / 2);
     }
 
-    if (filterDisplay != nullptr)
-        filterDisplay->setBounds (16, 12, width - 32, 170);
-    if (levelMeter != nullptr)
-        levelMeter->setBounds (16, 12, width - 32, 140);
-    if (envelopeEditor != nullptr)
-        envelopeEditor->setBounds (16, waveform != nullptr ? 248 : (filterDisplay != nullptr ? 192 : 12), width - 32, 132);
-
-    for (size_t i = 0; i < controls.size(); ++i)
+    content.cards.clear();
+    for (int i = 0; i < count; ++i)
     {
-        const int row = (int) i / columns;
-        const int col = (int) i % columns;
-        const int x = 16 + col * (cellWidth + gap);
-        const int y = top + row * (cellHeight + gap);
-        auto card = juce::Rectangle<int> (x, y, cellWidth, cellHeight);
+        const int row = i / columns;
+        const int col = i % columns;
+        // Center incomplete final rows instead of leaving a ragged corner.
+        const int rowCount = juce::jmin (columns, count - row * columns);
+        const int rowLeft = margin + ((columns - rowCount) * (cellWidth + gap)) / 2;
+        const int x = rowLeft + col * (cellWidth + gap);
+        const int y = top + row * (cardHeight + gap);
+        auto card = juce::Rectangle<int> (x, y, cellWidth, cardHeight);
         content.cards.push_back (card);
-        labels[i]->setBounds (card.withY (card.getY() + 8).withHeight (20).reduced (5, 0));
-
-        if (auto* slider = dynamic_cast<juce::Slider*> (controls[i].get()))
-            slider->setBounds (card.withTrimmedTop (27).reduced (8, 1));
+        labels[(size_t) i]->setBounds (x + 5, y + 5, cellWidth - 10, 18);
+        if (auto* slider = dynamic_cast<juce::Slider*> (controls[(size_t) i].get()))
+            slider->setBounds (x + 7, y + 25, cellWidth - 14, cardHeight - 29);
         else
-            controls[i]->setBounds (card.withTrimmedTop (34).reduced (8, 5));
+            controls[(size_t) i]->setBounds (x + 8, y + 35, cellWidth - 16,
+                                            juce::jmin (42, cardHeight - 42));
     }
     content.repaint();
 }
@@ -1059,9 +1111,12 @@ WaveForgeEditor::WaveForgeEditor (WaveForgeProcessor& processor)
         { "gain", "OUTPUT GAIN" }
     }, false, {}, true), false);
 
+    // Serum-inspired 16:10 proportions; resizing keeps the same aspect ratio.
     setResizable (true, true);
-    setResizeLimits (900, 650, 1600, 1200);
-    setSize (1180, 820);
+    setResizeLimits (1088, 680, 1600, 1000);
+    if (auto* constrainer = getConstrainer())
+        constrainer->setFixedAspectRatio (1.6);
+    setSize (1200, 750);
 }
 
 WaveForgeEditor::~WaveForgeEditor()
