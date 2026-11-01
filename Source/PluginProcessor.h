@@ -42,6 +42,7 @@ private:
     static juce::AudioProcessorValueTreeState::ParameterLayout createLayout();
 
     static constexpr int numVoices = 8;
+    WavetableBank bank;
     juce::Synthesiser synth;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (WaveForgeProcessor)
