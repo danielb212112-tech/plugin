@@ -41,8 +41,14 @@ public:
 private:
     static juce::AudioProcessorValueTreeState::ParameterLayout createLayout();
 
+    // מצביעים לפרמטרים של LFO ומטריצת המודולציה (נשמרים פעם אחת בבנאי)
+    struct LfoPtrs { std::atomic<float> *shape = nullptr, *rate = nullptr, *fade = nullptr, *sync = nullptr; };
+    struct ModPtrs { std::atomic<float> *src = nullptr, *dst = nullptr, *amt = nullptr; };
+    std::array<LfoPtrs, 2> lfoPtrs;
+    std::array<ModPtrs, 4> modPtrs;
+
     static constexpr int numVoices = 8;
-    WavetableBank bank;
+    WavetableBank bank;          // חייב להיות לפני synth (הקולות מחזיקים הפניה אליו)
     juce::Synthesiser synth;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (WaveForgeProcessor)
